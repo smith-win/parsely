@@ -325,6 +325,7 @@ pub mod parsers {
         assert_eq!(true, match_str(" banana", &mut rb)? );
 
         // this will run over the end, so will EOF .. how does it do that?
+        // This is example of  to assert for error condition in a test
         assert!( match_str(" cherryblossome", &mut rb).is_err() ) ;
         Ok(())
     }
