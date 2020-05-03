@@ -3,6 +3,29 @@ use std::vec::Vec;
 
 use self::Mark::*;
 
+/*
+Notes .. 
+
+errors
+    
+    underlying I/O (from std::io::Result)
+    and EOF (no enough data in stream, so incomplete)
+
+    -- are we effectively "tokenizing" in this layer ?
+
+Have a look at std::io::Result and see its definition and if we can make use of it?
+
+    Os - from underling operating system with the code
+    Simple - with an associate ErrorKind - we could re-use (InvalidData & UnexpectedEof)
+    Custom
+    
+is it possible to define a type alias for out method signatures to keep the code tidy ?
+
+    e.g type parser func: Fn<??? ?? ? ?>
+
+*/
+
+
 /// Struct that creates a iterator of chars from a Read
 pub(crate) struct Chars<R: Read> {
     inner: Bytes<R>,
@@ -19,14 +42,14 @@ impl <R: Read> Chars<R> {
 }
 
 impl <R: Read> Iterator for Chars<R> {
-    type Item = Result<char>;
+    type Item = std::io::Result<char>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.inner.next() {
             Some(r) => {
                 if r.is_ok() {
                     // convert -- worry about not ASCII later!!
-                    // what to do with full UTF-8 compliance
+                    // what to do with full UTF-8 compliance ??
                     Some(Ok(r.unwrap() as char))
                 } else {
                     Some(Err(r.unwrap_err()))
@@ -139,7 +162,7 @@ pub mod tests {
         let mut rb = RewindableChars::new(Cursor::new(s).bytes());
         let mut s = String::new();
 
-        let mut m = rb.mark();
+        let m = rb.mark();
 
         // out of interest, how big is a Mark
         println!("Size of a mark {} bytes, size of usize {} bytes", std::mem::size_of::<Mark>(), std::mem::size_of::<usize>());
@@ -161,7 +184,7 @@ pub mod tests {
 
 
         s.clear();
-        m = rb.accept();
+        let _m = rb.accept();
         for _i in 0..7 {
             s.push(rb.next().unwrap().unwrap());
         }
@@ -176,11 +199,13 @@ pub mod parsers {
     //! By convention return borrowed items such that parsing is zero copy.
 
     use super::RewindableChars;
-    use std::io::Read;
-    use std::io::Cursor; // TODO: used in tests only, how to tidy up?
+    use std::io::{Read, Result, Error, ErrorKind};
+
+    #[cfg(test)]
+    use std::io::{Cursor};
 
     /// Matches a string 
-    pub fn match_str<R>(s: &str, rc: &mut RewindableChars<R>) -> bool
+    pub fn match_str<R>(s: &str, rc: &mut RewindableChars<R>) -> Result<bool>
         where R: Read 
     {
         // TODO: what does the return look like
@@ -189,21 +214,23 @@ pub mod parsers {
         // Check each char
         for c in s.chars() {
             
-            // TODO: Double-enum is yukky
-            if let Some(x) = rc.next() {
+            // check the io_option, if None -- ithe we're EOF
+            if let Some(io_option) = rc.next() {
                 
-                if let Ok(y) =  x {
+                if let Ok(y) = io_option {
 
                     if y != c {
-                        return false;
+                        return Ok(false);
                     }
+                } else {
+                    return Ok(false);
                 }
-
             } else {
-                return false;
+                // unexpected oef
+                return Err(Error::new(ErrorKind::UnexpectedEof, "reached EOF before matching string"));
             }
         }
-        true
+        Ok(true)
     }
 
 
@@ -213,9 +240,7 @@ pub mod parsers {
     {
         while let Some(x) = rc.next() {
             if let Ok(y) = x {
-                println!("Char {}", y);
                 if !f(y) {
-                    println!("\t --> not ws");
                     rc.backup();
                     return;
                 }
@@ -235,81 +260,117 @@ pub mod parsers {
     }
 
 
+    #[inline]
+    fn is_eof(err: &std::io::Error) -> bool {
+        err.kind() == ErrorKind::UnexpectedEof
+    }
 
     /// WIP - see if we can match an optional string
-    pub fn option_2<R>(s1: &str, s2: &str, rc: &mut RewindableChars<R>) -> bool
+    pub fn option_2<R>(s1: &str, s2: &str, rc: &mut RewindableChars<R>) -> std::io::Result<bool> 
         where R: Read 
     {
         // Take a mark, try 1 then 2
         let mark = rc.mark();
 
-        if match_str(s1, rc) {
-            return true;
+        if match_str(s1, rc)? {
+            return Ok(true);
         }
+
+        let mut matched = false;
+
+        match match_str(s1, rc) {
+            Ok(b) => matched = b ,
+            Err(e) => {
+                // Eof may not be fatal in case of option
+                if !is_eof(&e) { return Err(e) }
+                }
+        };
+
+        if matched {
+            return Ok(true);
+        } 
         
+        // Even if EOF, can rewind
         rc.rewind(mark);
+        return match match_str(s2, rc) {
+            Ok(b) => Ok(b) ,
+            Err(e) => Err(e)
+        };
 
-        if match_str(s2, rc) {
-            return true;
-        }
-
-        false
     }
 
 
-    #[test]
-    pub fn check_match_str() {
-        let s = String::from("apple banana cherry");
-        let mut rb = RewindableChars::new(Cursor::new(s).bytes());
-
-        assert_eq!(true, match_str("apple", &mut rb) );
-        assert_eq!(true, match_str(" banana", &mut rb) );
-        assert_eq!(false, match_str(" something else", &mut rb) );
-        
+    /// A convenience func used in tests
+    #[cfg(test)]
+    fn create_rc(s: &str) -> RewindableChars<Cursor<String>> {
+        let c = Cursor::new(String::from(s));
+        RewindableChars::new(c.bytes())
     }
 
     #[test]
-    pub fn check_match_str_eof() {
-        let s = String::from("apple banana cherry");
-        let mut rb = RewindableChars::new(Cursor::new(s).bytes());
+    pub fn check_match_str() -> std::io::Result<()> {
+        let mut rb = create_rc("apple banana cherry");
 
-        assert_eq!(true, match_str("apple", &mut rb) );
-        assert_eq!(true, match_str(" banana", &mut rb) );
+        assert_eq!(true, match_str("apple", &mut rb)? );
+        assert_eq!(true, match_str(" banana", &mut rb)? );
+        assert_eq!(false, match_str(" something else", &mut rb)? );
+        Ok(())
+    }
+
+    #[test]
+    pub fn check_match_str_eof() -> std::io::Result<()> {
+        let mut rb = create_rc("apple banana cherry");
+
+        assert_eq!(true, match_str("apple", &mut rb)? );
+        assert_eq!(true, match_str(" banana", &mut rb)? );
 
         // this will run over the end, so will EOF .. how does it do that?
-        assert_eq!(false, match_str(" cherryblossome", &mut rb) );
-
+        assert!( match_str(" cherryblossome", &mut rb).is_err() ) ;
+        Ok(())
     }
 
     #[test]
-    pub fn check_match_str_and_skip_whitespace() {
-        let s = String::from(" apple  banana\tcherry");
-        let mut rb = RewindableChars::new(Cursor::new(s).bytes());
+    pub fn check_match_str_and_skip_whitespace() -> std::io::Result<()> {
+        let mut rb = create_rc(" apple  banana\tcherry");
+        
+        skip_whitespace(&mut rb);
+        assert_eq!(true, match_str("apple", &mut rb) ? );
+        skip_whitespace(&mut rb);
+        assert_eq!(true, match_str("banana", &mut rb) ? );
+        skip_whitespace(&mut rb);
+        assert_eq!(true, match_str("cherry", &mut rb) ? );
+        Ok(())
+    }
+
+
+
+    #[test]
+    pub fn check_match_options() -> std::io::Result<()> {
+        let mut rb = create_rc("lamb carrot cabbage");
 
         skip_whitespace(&mut rb);
-        assert_eq!(true, match_str("apple", &mut rb) );
+        assert_eq!(true, option_2("beef", "lamb", &mut rb)? );
         skip_whitespace(&mut rb);
-        assert_eq!(true, match_str("banana", &mut rb) );
+        assert_eq!(true, option_2("carrot", "cabbage", &mut rb)? );
         skip_whitespace(&mut rb);
-        assert_eq!(true, match_str("cherry", &mut rb) );
-
+        assert_eq!(true, option_2("carrot", "cabbage", &mut rb)? );
+        Ok(())
     }
 
 
     #[test]
-    pub fn check_match_options() {
-        let s = String::from("lamb carrot cabbage");
-        let mut rb = RewindableChars::new(Cursor::new(s).bytes());
+    pub fn check_eof_on_options() -> std::io::Result<()> {
+        //! Check that we can cope with an EOF, and that EOF not prematurely raised
+        let mut rb = create_rc("lamb carrot carrot");
 
         skip_whitespace(&mut rb);
-        assert_eq!(true, option_2("beef", "lamb", &mut rb) );
+        assert_eq!(true, option_2("beef", "lamb", &mut rb)? );
         skip_whitespace(&mut rb);
-        assert_eq!(true, option_2("carrot", "cabbage", &mut rb) );
+        assert_eq!(true, option_2("carrot", "cabbage", &mut rb)? );
         skip_whitespace(&mut rb);
-        assert_eq!(true, option_2("carrot", "cabbage", &mut rb) );
 
+        // NB: notice how cabbage (7chars) is longer than carrot (6) -- this show not EOF, even though 1st item will
+        assert_eq!(true, option_2("cabbage", "carrot", &mut rb)? );        
+        Ok(())
     }
-
-
-
 }
