@@ -1,6 +1,6 @@
-use std::io::{Read, Bytes, Result};
+use std::io::{Read, Bytes};
 use std::vec::Vec;
-
+use std::result::Result;
 use self::Mark::*;
 
 /*
@@ -24,10 +24,26 @@ is it possible to define a type alias for out method signatures to keep the code
     e.g type parser func: Fn<??? ?? ? ?>
 
 */
+#[derive(Debug)]
+pub enum ParseErr {
+
+    /// Parser did not match expected input
+    DidNotMatch,
+
+    /// Bad data - plus message.  Un re-coverable error ?
+    BadData(String),
+
+    /// Underlying I/O occured - which would usually be fatal
+    Io(std::io::Error),
+}
+
+
+/// Custom type used for parser results
+pub type ParseResult<T> = Result<T, ParseErr>;
 
 
 /// Struct that creates a iterator of chars from a Read
-pub(crate) struct Chars<R: Read> {
+struct Chars<R: Read> {
     inner: Bytes<R>,
 }
 
@@ -114,7 +130,7 @@ impl <R:Read> RewindableChars<R> {
 
 /// Implements an iterator for RewindableChars.
 impl <R: Read> Iterator for RewindableChars<R> {
-    type Item = Result<char>;
+    type Item = std::io::Result<char>;
 
     fn next(&mut self) -> Option<Self::Item> {
 
@@ -198,14 +214,35 @@ pub mod parsers {
     //! Module provinding basic parsing funcs that other parsers can be build on.
     //! By convention return borrowed items such that parsing is zero copy.
 
-    use super::RewindableChars;
-    use std::io::{Read, Result, Error, ErrorKind};
+    use super::{RewindableChars, ParseResult, ParseErr};
+    use std::io::{Read};
 
     #[cfg(test)]
     use std::io::{Cursor};
 
-    /// Matches a string 
-    pub fn match_str<R>(s: &str, rc: &mut RewindableChars<R>) -> Result<bool>
+
+    impl std::convert::From<std::io::Error> for ParseErr {
+
+        fn from(io_err: std::io::Error) -> ParseErr {
+            ParseErr::Io(io_err)
+        }
+    }
+
+
+    // TODO: check effect if inlining
+    pub fn p_chk<T: std::fmt::Debug>(pr: ParseResult<T>) -> ParseResult<Option<T>> {
+        if let Ok(x) = pr { 
+            Ok(Some(x)) 
+        } else {
+            let x = pr.unwrap_err();
+            Err(x)
+        }        
+    }
+
+
+    /// Matches a specific string
+    #[inline] 
+    pub fn match_str<R>(s: &str, rc: &mut RewindableChars<R>) -> ParseResult<bool>
         where R: Read 
     {
         // TODO: what does the return look like
@@ -220,70 +257,116 @@ pub mod parsers {
                 if let Ok(y) = io_option {
 
                     if y != c {
-                        return Ok(false);
+                        return Err(ParseErr::DidNotMatch);
                     }
                 } else {
-                    return Ok(false);
+                    return Err(ParseErr::DidNotMatch);
                 }
             } else {
                 // unexpected oef
-                return Err(Error::new(ErrorKind::UnexpectedEof, "reached EOF before matching string"));
+                return Err(ParseErr::DidNotMatch);
             }
         }
         Ok(true)
     }
 
 
+    /// Tricky .. could be any length -- could pass the the sttring?
+    pub fn capture_while<R, F>(f: F, s: &mut String, rc: &mut RewindableChars<R>) -> ParseResult<()>
+        where R: Read, F: Fn(char) -> bool 
+    {
+
+        while let Some(x) = rc.next() {
+            if let Ok(y) = x {
+                if !f(y) {
+                    rc.backup();
+                    return Ok(());
+                } else {
+                    s.push(y);
+                }
+            } else {
+                // check for Eof, and ignore ?
+            }
+        } 
+        // TODO: What do with EOF here ?
+        Ok(())
+    }
+
+
+
     /// Scans input while provided predicate is true
-    pub fn skip_while<R, F>(f: F, rc: &mut RewindableChars<R>) 
+    pub fn skip_while<R, F>(f: F, rc: &mut RewindableChars<R>) -> ParseResult<()>
         where R: Read, F: Fn(char) -> bool 
     {
         while let Some(x) = rc.next() {
             if let Ok(y) = x {
                 if !f(y) {
                     rc.backup();
-                    return;
+                    return Ok(());
+                }
+            } else {
+                // check for Eof, and ignore ?
+            }
+        } 
+        // TODO: What do with EOF here ?
+        Ok(())
+    }
+
+    /// Captures exactly "n" characters
+    pub fn capture_n<R, F>(rc: &mut RewindableChars<R>, f: F, n: usize) -> ParseResult<String>
+        where R: Read, F: Fn(char) -> bool 
+    {
+        let mut count = 0usize;
+        let mut result = String::with_capacity(n); // typically in UTF-8
+        while let Some(x) = rc.next() {
+            if let Ok(y) = x {
+                if f(y) {
+                    result.push(y);
+                    count += 1;
+                    if count == n {
+                        return Ok(result);
+                    }
+                } else {
+                    // next char was not wanted .. backup
+                    rc.backup();
+                    return Err(ParseErr::DidNotMatch)
                 }
             }
         }
+
+        // not enough input, so EOF
+        Err(ParseErr::DidNotMatch)
     }
 
 
     // TODO: return type needs to signal EOF
     /// To skip whitespace in character stream
-    pub fn skip_whitespace<R>(rc: &mut RewindableChars<R>) 
+    pub fn skip_whitespace<R>(rc: &mut RewindableChars<R>) -> ParseResult<()>
         where R: Read 
     {
         // we define a closure
         let f = |c:char| c.is_whitespace();
-        skip_while(f, rc);
+        skip_while(f, rc) ?;
+        Ok(())
     }
 
 
-    #[inline]
-    fn is_eof(err: &std::io::Error) -> bool {
-        err.kind() == ErrorKind::UnexpectedEof
-    }
+
 
     /// WIP - see if we can match an optional string
-    pub fn option_2<R>(s1: &str, s2: &str, rc: &mut RewindableChars<R>) -> std::io::Result<bool> 
-        where R: Read 
+    pub fn option_2<R>(s1: &str, s2: &str, rc: &mut RewindableChars<R>) -> ParseResult<bool> 
+    where R: Read 
     {
         // Take a mark, try 1 then 2
         let mark = rc.mark();
-
-        if match_str(s1, rc)? {
-            return Ok(true);
-        }
 
         let mut matched = false;
 
         match match_str(s1, rc) {
             Ok(b) => matched = b ,
             Err(e) => {
-                // Eof may not be fatal in case of option
-                if !is_eof(&e) { return Err(e) }
-                }
+                if let ParseErr::Io(x) = e { return Err(ParseErr::Io(x)) }
+            }
         };
 
         if matched {
@@ -300,6 +383,39 @@ pub mod parsers {
     }
 
 
+
+
+    /// An optional that takes a closure
+    pub fn option_2_fn<F, R>(func1: F, func2: F, rc: &mut RewindableChars<R>) -> ParseResult<bool> 
+        where R: Read , F: Fn(&mut RewindableChars<R>) -> ParseResult<bool>
+    {
+        // Take a mark, try 1 then 2
+        let mark = rc.mark();
+
+        let mut matched = false;
+
+        match func1(rc) {
+            Ok(b) => matched = b ,
+            Err(e) => {
+                    // Eof may not be fatal in case of option
+                    if let ParseErr::Io(x) = e { return Err(ParseErr::Io(x)) }
+                }
+        };
+
+        if matched {
+            return Ok(true);
+        } 
+        
+        // Even if EOF, can rewind
+        rc.rewind(mark);
+        return match func2(rc) {
+            Ok(b) => Ok(b) ,
+            Err(e) => Err(e)
+        };
+
+    }
+
+
     /// A convenience func used in tests
     #[cfg(test)]
     fn create_rc(s: &str) -> RewindableChars<Cursor<String>> {
@@ -308,17 +424,17 @@ pub mod parsers {
     }
 
     #[test]
-    pub fn check_match_str() -> std::io::Result<()> {
+    pub fn check_match_str() -> ParseResult<()> {
         let mut rb = create_rc("apple banana cherry");
 
         assert_eq!(true, match_str("apple", &mut rb)? );
         assert_eq!(true, match_str(" banana", &mut rb)? );
-        assert_eq!(false, match_str(" something else", &mut rb)? );
+        assert!(match_str(" something else", &mut rb).is_err() );
         Ok(())
     }
 
     #[test]
-    pub fn check_match_str_eof() -> std::io::Result<()> {
+    pub fn check_match_str_eof() -> ParseResult<()> {
         let mut rb = create_rc("apple banana cherry");
 
         assert_eq!(true, match_str("apple", &mut rb)? );
@@ -330,15 +446,17 @@ pub mod parsers {
         Ok(())
     }
 
+
+
     #[test]
-    pub fn check_match_str_and_skip_whitespace() -> std::io::Result<()> {
+    pub fn check_match_str_and_skip_whitespace() -> ParseResult<()> {
         let mut rb = create_rc(" apple  banana\tcherry");
         
-        skip_whitespace(&mut rb);
+        skip_whitespace(&mut rb) ?;
         assert_eq!(true, match_str("apple", &mut rb) ? );
-        skip_whitespace(&mut rb);
+        skip_whitespace(&mut rb) ?;
         assert_eq!(true, match_str("banana", &mut rb) ? );
-        skip_whitespace(&mut rb);
+        skip_whitespace(&mut rb) ?;
         assert_eq!(true, match_str("cherry", &mut rb) ? );
         Ok(())
     }
@@ -346,32 +464,160 @@ pub mod parsers {
 
 
     #[test]
-    pub fn check_match_options() -> std::io::Result<()> {
+    pub fn check_match_options() -> ParseResult<()> {
         let mut rb = create_rc("lamb carrot cabbage");
 
-        skip_whitespace(&mut rb);
+        skip_whitespace(&mut rb) ?;
         assert_eq!(true, option_2("beef", "lamb", &mut rb)? );
-        skip_whitespace(&mut rb);
+        skip_whitespace(&mut rb) ?;
         assert_eq!(true, option_2("carrot", "cabbage", &mut rb)? );
-        skip_whitespace(&mut rb);
+        skip_whitespace(&mut rb) ?;
         assert_eq!(true, option_2("carrot", "cabbage", &mut rb)? );
+        Ok(())
+    }
+
+
+    /// Function_name ( param1 [, param]*)
+    /// A function with zero or more params seperated by a comma
+    #[test]
+    pub fn check_func_and_params() {
+        use crate::internals::parsers;
+        use std::vec::Vec;
+
+        /// alpha char
+        fn p_alpha<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<char> {
+            if let Some(x) = rc.next() {
+                if let Ok(c) = x {
+                    if (c > 'a' && c < 'z') || (c > 'A' && c < 'Z') {
+                        return Ok(c);
+                    }
+                }
+            }
+            Err(ParseErr::DidNotMatch)
+        }
+
+        /// Matches a name  - in our case a param name or a function name
+        fn p_name<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<String> {
+
+            // at least one alpha
+            let mut s = String::new();
+            s.push ( p_alpha(rc) ? );
+
+            let fn_alphanum = |c| {
+                (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            };
+            parsers::capture_while(fn_alphanum, &mut s, rc) ?;
+
+            Ok(s)
+        }
+
+        /// Matches some parameters
+        /// Result is empty, we could choose to emit a vector of params
+        fn p_params<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<Vec<String>> {
+
+            let mut vec : Vec<String> = Vec::new();
+            let mut first = true;
+            
+            parsers::skip_whitespace(rc) ?;
+            parsers::match_str("(", rc) ?;
+            loop {
+                
+                // expect comma seperator
+                skip_whitespace(rc) ?;
+                if !first {
+                    match parsers::match_str(",", rc)  {
+                        Ok(_) => { },
+                        Err(ParseErr::DidNotMatch) => { rc.backup(); break },
+                        Err ( x ) => { return Err (x ) },
+                    };
+                    parsers::skip_whitespace(rc) ? ;
+                }
+
+                let name = p_name(rc)?;
+                first = false;
+                vec.push( name );
+            }
+
+            skip_whitespace(rc) ?;
+            parsers::match_str(")", rc) ?;
+            Ok(vec)
+        }
+
+
+        /// Matches and entire function - name and optional parameters
+        /// The return is tuple - the name of the func and then a vec of the Params
+        fn p_func<R: Read>(rc: &mut RewindableChars<R>)  -> ParseResult<(String, Vec<String>)> {
+            skip_whitespace(rc) ?;
+            let s = p_name(rc)? ;
+            let v = p_params(rc) ?;
+            Ok((s, v))
+        }
+
+
+        let mut rc = create_rc("myfunc12( param1, param2 , param3)");
+        let mut result  = p_func(&mut rc);
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        assert_eq!("myfunc12", val.0);
+        assert_eq!(vec!["param1", "param2", "param3"], val.1);
+
+
+        // no end parenthesis
+        rc = create_rc("myfunc12( param1, param2 , param3");
+        result  = p_func(&mut rc);
+        assert!(result.is_err());
+
+        // mismatched parenthesis
+        rc = create_rc("myfunc12( param1, param2 , param3]");
+        result  = p_func(&mut rc);
+        assert!(result.is_err());
+
+        // invalid func name
+        rc = create_rc("myf$$unc12( param1, param2 , param3]");
+        result  = p_func(&mut rc);
+        assert!(result.is_err());
+
+        
+
+    }
+
+
+
+    #[test]
+    pub fn check_eof_on_options() -> ParseResult<()> {
+        //! Check that we can cope with an EOF, and that EOF not prematurely raised
+        let mut rc = create_rc("lamb carrot carrot");
+
+        skip_whitespace(&mut rc) ?;
+        assert_eq!(true, option_2("beef", "lamb", &mut rc)? );
+        skip_whitespace(&mut rc) ?;
+        assert_eq!(true, option_2("carrot", "cabbage", &mut rc)? );
+        skip_whitespace(&mut rc) ?;
+
+        // NB: notice how cabbage (7chars) is longer than carrot (6) -- this show not EOF, even though 1st item will
+        assert_eq!(true, option_2("cabbage", "carrot", &mut rc)? );        
         Ok(())
     }
 
 
     #[test]
-    pub fn check_eof_on_options() -> std::io::Result<()> {
-        //! Check that we can cope with an EOF, and that EOF not prematurely raised
-        let mut rb = create_rc("lamb carrot carrot");
+    pub fn check_capture_n() {
 
-        skip_whitespace(&mut rb);
-        assert_eq!(true, option_2("beef", "lamb", &mut rb)? );
-        skip_whitespace(&mut rb);
-        assert_eq!(true, option_2("carrot", "cabbage", &mut rb)? );
-        skip_whitespace(&mut rb);
+        let mut rc = create_rc("AAAAAAAxxxxxxx");
 
-        // NB: notice how cabbage (7chars) is longer than carrot (6) -- this show not EOF, even though 1st item will
-        assert_eq!(true, option_2("cabbage", "carrot", &mut rb)? );        
-        Ok(())
+        let match_a = |c| return c == 'A';
+        let match_x = |c| return c == 'x';
+
+        match capture_n(&mut rc, match_a, 7) {
+            Ok(s) => assert_eq!("AAAAAAA", s), 
+            _ => panic!("failed to match")
+        };
+
+        match capture_n(&mut rc, match_x, 7) {
+            Ok(s) => assert_eq!("xxxxxxx", s), 
+            _ => panic!("failed to match")
+        };
+
     }
+
 }
