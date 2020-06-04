@@ -87,6 +87,9 @@ This is the basic building block of a parser combinator library.
 
     -- we also need a "repeat" function/macro . like "one_of" that we can use for CSV (and number of parameters)
 
+13 May
+    -- the basic function parser is working
+    -- created a skeleton macro that can be basis for optional matching (should check return types!)
 
 
 psuedo code below.

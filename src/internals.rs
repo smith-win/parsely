@@ -3,37 +3,71 @@ use std::vec::Vec;
 use std::result::Result;
 use self::Mark::*;
 
-/*
-Notes .. 
 
-errors
-    
-    underlying I/O (from std::io::Result)
-    and EOF (no enough data in stream, so incomplete)
 
-    -- are we effectively "tokenizing" in this layer ?
+/// Macro for matching one of a series of parsing options
+#[macro_export]
+macro_rules! match_or {
+    // first arg is parser/rewinder, then the args
+    ($r:expr, $( $x:expr ),* ) => (
+        { 
+            let mut pr: ParseResult<()> = Err(ParseErr::DidNotMatch);
+            $(
+                if let Err(ParseErr::DidNotMatch) = pr {
+                    let mark_or = $r.mark();
+                    let result = $x;
+                    // here is where we match the result
+                    pr =  match result {
+                        Ok(_) => { Ok(()) }, 
+                        Err(ParseErr::DidNotMatch) => { $r.rewind(mark_or); Err(ParseErr::DidNotMatch)},
+                        Err(ParseErr::Io(x)) => { Err(ParseErr::Io(x)) },
+                        Err(ParseErr::BadData(s)) => { Err(ParseErr::BadData(s))},
+                    };
+                }
+            )* 
+            pr
+        }
+    );
+}
 
-Have a look at std::io::Result and see its definition and if we can make use of it?
 
-    Os - from underling operating system with the code
-    Simple - with an associate ErrorKind - we could re-use (InvalidData & UnexpectedEof)
-    Custom
-    
-is it possible to define a type alias for out method signatures to keep the code tidy ?
+/// Macro for matching all of a series of parsing options
+#[macro_export]
+macro_rules! match_all {
+    // first arg is parser/rewinder, then the args
+    ($r:expr, $( $x:expr ),* ) => (
+        { 
+            let mut pr: ParseResult<()> = Ok(());
+            $(
+                if let Ok(_) = pr {
+                    let mark_or = $r.mark();
+                    let result = $x;
+                    // here is where we match the result
+                    pr =  match result {
+                        Ok(_) => { Ok(()) }, 
+                        Err(ParseErr::DidNotMatch) => { $r.rewind(mark_or); Err(ParseErr::DidNotMatch)},
+                        Err(ParseErr::Io(x)) => { Err(ParseErr::Io(x)) },
+                        Err(ParseErr::BadData(s)) => { Err(ParseErr::BadData(s))},
+                    };
+                }
+            )* 
+            pr
+        }
+    );
+}
 
-    e.g type parser func: Fn<??? ?? ? ?>
 
-*/
+/// Error type for parsing issues
 #[derive(Debug)]
 pub enum ParseErr {
 
     /// Parser did not match expected input
     DidNotMatch,
 
-    /// Bad data - plus message.  Un re-coverable error ?
+    /// Bad data - plus message.  Some un-recoverable error has occured
     BadData(String),
 
-    /// Underlying I/O occured - which would usually be fatal
+    /// Underlying I/O occured - which is considered fatal
     Io(std::io::Error),
 }
 
@@ -149,7 +183,7 @@ impl <R: Read> Iterator for RewindableChars<R> {
                     
                     // Push the utf bytes onto the Vec
                     if my_char as u32 > 127 {
-                        panic!("Need to sort out proper encoding!")
+                        panic!("Need to sort out proper UTF-8 encoding!")
                     } else {
                         self.pos += 1;
                         self.buffer.push(my_char as u8);
@@ -165,6 +199,7 @@ impl <R: Read> Iterator for RewindableChars<R> {
         }
     }
 }
+
 
 #[cfg(test)]
 pub mod tests {
@@ -210,6 +245,7 @@ pub mod tests {
     }
 }
 
+#[macro_use]
 pub mod parsers {
     //! Module provinding basic parsing funcs that other parsers can be build on.
     //! By convention return borrowed items such that parsing is zero copy.
@@ -240,6 +276,32 @@ pub mod parsers {
     }
 
 
+    /// Matches a character ... quite useful
+    #[inline]
+    pub fn match_char<R>(c: char, rc: &mut RewindableChars<R>) -> ParseResult<()>
+        where R:Read 
+    {
+        // check the io_option, if None -- ithe we're EOF
+        if let Some(io_option) = rc.next() {
+            
+            if let Ok(y) = io_option {
+
+                if y != c {
+                    return Err(ParseErr::DidNotMatch);
+                } else {
+                    return Ok(())
+                }
+            } else {
+                return Err(ParseErr::DidNotMatch);
+            }
+        } else {
+            // unexpected oef
+            return Err(ParseErr::DidNotMatch);
+        }        
+    }
+
+
+
     /// Matches a specific string
     #[inline] 
     pub fn match_str<R>(s: &str, rc: &mut RewindableChars<R>) -> ParseResult<bool>
@@ -250,30 +312,43 @@ pub mod parsers {
 
         // Check each char
         for c in s.chars() {
-            
-            // check the io_option, if None -- ithe we're EOF
-            if let Some(io_option) = rc.next() {
-                
-                if let Ok(y) = io_option {
-
-                    if y != c {
-                        return Err(ParseErr::DidNotMatch);
-                    }
-                } else {
-                    return Err(ParseErr::DidNotMatch);
-                }
-            } else {
-                // unexpected oef
-                return Err(ParseErr::DidNotMatch);
-            }
+            match_char(c, rc) ?
         }
         Ok(true)
     }
 
 
-    /// Tricky .. could be any length -- could pass the the sttring?
-    pub fn capture_while<R, F>(f: F, s: &mut String, rc: &mut RewindableChars<R>) -> ParseResult<()>
+    /// Matches a String, but leaves parse position where it is 
+    pub fn match_str_optional<R>(s: &str, rc: &mut RewindableChars<R>) -> ParseResult<bool> 
+        where R:Read
+    {
+        let m = rc.mark();
+        match match_str(s, rc) {
+            Ok(true) =>  Ok(true) ,
+            Ok(false) => { rc.rewind(m); Ok(false) } ,
+            Err(ParseErr::DidNotMatch) => { rc.rewind(m); Ok(false) } ,
+            Err ( x ) => Err(x) ,
+        }
+    }
+
+
+    /// Captures while input is mandatory
+    pub fn capture_while_mand<R, F>(f: F, s: &mut String, rc: &mut RewindableChars<R>) -> ParseResult<()> 
         where R: Read, F: Fn(char) -> bool 
+    {
+        let x = s.len();
+        capture_while(f, s, rc)?;
+
+        if s.len() != x {
+            Ok(())
+        } else {
+            Err(ParseErr::DidNotMatch)
+        }
+    }
+
+    /// Tricky .. could be any length -- could pass the the string?
+    pub fn capture_while<R, F>(f: F, s: &mut String, rc: &mut RewindableChars<R>) -> ParseResult<()>
+    where R: Read, F: Fn(char) -> bool 
     {
 
         while let Some(x) = rc.next() {
@@ -291,7 +366,6 @@ pub mod parsers {
         // TODO: What do with EOF here ?
         Ok(())
     }
-
 
 
     /// Scans input while provided predicate is true
@@ -384,8 +458,7 @@ pub mod parsers {
 
 
 
-
-    /// An optional that takes a closure
+    /// An optional that takes a closure - doesn't work as signatures of each closure are unique
     pub fn option_2_fn<F, R>(func1: F, func2: F, rc: &mut RewindableChars<R>) -> ParseResult<bool> 
         where R: Read , F: Fn(&mut RewindableChars<R>) -> ParseResult<bool>
     {
@@ -488,7 +561,7 @@ pub mod parsers {
         fn p_alpha<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<char> {
             if let Some(x) = rc.next() {
                 if let Ok(c) = x {
-                    if (c > 'a' && c < 'z') || (c > 'A' && c < 'Z') {
+                    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
                         return Ok(c);
                     }
                 }
@@ -554,7 +627,7 @@ pub mod parsers {
         }
 
 
-        let mut rc = create_rc("myfunc12( param1, param2 , param3)");
+        let mut rc = create_rc("myfunc12          (param1,param2,param3)");
         let mut result  = p_func(&mut rc);
         assert!(result.is_ok());
         let val = result.unwrap();
@@ -576,9 +649,6 @@ pub mod parsers {
         rc = create_rc("myf$$unc12( param1, param2 , param3]");
         result  = p_func(&mut rc);
         assert!(result.is_err());
-
-        
-
     }
 
 
@@ -601,6 +671,34 @@ pub mod parsers {
 
 
     #[test]
+    pub fn check_param_list() -> ParseResult<()> {
+
+        use crate::internals::parsers;
+
+        fn p_name<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<String> {
+            let mut s = String::new();
+            let fn_alphanum = |c| {
+                (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            };
+            parsers::capture_while(fn_alphanum, &mut s, rc) ?;
+            Ok(s)
+        }
+
+        let mut rc = create_rc("(param1,param2,param3)");
+        
+        // TODO: need to throw if not mand
+        parsers::match_str("(", &mut rc) ?;
+       
+        let result  = p_name(&mut rc);  
+        assert!(result.is_ok());
+        println!("Result: {}", result.unwrap_or("Shite!".to_owned()));
+
+        Ok(())
+
+    }
+
+
+    #[test]
     pub fn check_capture_n() {
 
         let mut rc = create_rc("AAAAAAAxxxxxxx");
@@ -617,6 +715,147 @@ pub mod parsers {
             Ok(s) => assert_eq!("xxxxxxx", s), 
             _ => panic!("failed to match")
         };
+    }
+
+
+    #[test]
+    pub fn check_match_all_macro() {
+        let mut rc = create_rc("AAAAAAAxxxxxxxA");
+
+        let match_a = |c:char| return c == 'A';
+        let match_x = |c:char| return c == 'x';
+
+        // match_or!(&mut rc, capture_n(&mut rc, match_a, 7)  ) ;
+        let mut x = match_all!(&mut rc
+            , capture_n(&mut rc, match_a, 4)
+            , capture_n(&mut rc, match_a, 3)
+            , capture_n(&mut rc, match_x, 1)  
+            , capture_n(&mut rc, match_x, 5)  
+            , capture_n(&mut rc, match_x, 1)  
+            , capture_n(&mut rc, match_a, 1)  
+        ) ;
+
+        assert!(x.is_ok());
+
+        rc = create_rc("AAAAAAAxxxxxAxxx");
+        x = match_all!(&mut rc
+            , capture_n(&mut rc, match_a, 4)
+            , capture_n(&mut rc, match_a, 3)
+            , capture_n(&mut rc, match_x, 1)  
+            , capture_n(&mut rc, match_x, 5)  
+            , capture_n(&mut rc, match_x, 1)  
+            , capture_n(&mut rc, match_a, 1)  
+        ) ;
+
+        assert!(
+            if let Err(ParseErr::DidNotMatch) = x {
+                true
+            } else {
+                false
+            }
+        );
+
+    }
+
+
+    #[test]
+    pub fn check_match_or() {
+        let mut rc = create_rc("a");
+
+        // simple version with no whitespace
+        let mut x = match_or!(&mut rc, 
+            match_char('x', &mut rc),
+            match_char('y', &mut rc),
+            match_char('z', &mut rc),
+            match_char('b', &mut rc)
+        ) ;
+        
+        // So cannot "return" from my macro == need to do something else!
+        assert!(
+            if let Err(ParseErr::DidNotMatch) = x {
+                true
+            } else {
+                false
+            }
+        );
+
+        x = match_or!(&mut rc, 
+            match_char('x', &mut rc),
+            match_char('y', &mut rc),
+            match_char('z', &mut rc),
+            match_char('a', &mut rc)
+        ) ;
+        assert!(x.is_ok());
+        
+    }
+
+    #[test]
+    pub fn check_func_using_macro() {
+
+        use crate::internals::parsers;
+        
+        /// alpha char
+        fn p_alpha<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<char> {
+            if let Some(x) = rc.next() {
+                if let Ok(c) = x {
+                    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+                        return Ok(c);
+                    }
+                }
+            }
+            Err(ParseErr::DidNotMatch)
+        }
+
+        /// Matches a name  - in our case a param name or a function name
+        fn p_name<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<()> {
+
+            // at least one alpha
+            let mut s = String::new();
+            s.push ( p_alpha(rc) ? );
+
+            let fn_alphanum = |c| {
+                (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            };
+            parsers::capture_while(fn_alphanum, &mut s, rc) ?;
+            println!("{} matched {}", line!(), s);
+            Ok(())
+        }
+        
+        /// params 
+        ///  single param (name)
+        ///  param ","" params
+        fn p_params<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<()> {
+            match_or!(rc
+                , match_all!(rc, p_name(rc), match_char(',', rc), p_params(rc))
+                , p_name(rc)
+            )
+        }
+        
+        fn p_func<R: Read>(rc: &mut RewindableChars<R>) -> ParseResult<()> {
+            match_all!(
+                rc,
+                p_name(rc),
+                match_char('(', rc),
+                p_params(rc),
+                match_char(')', rc)
+            )
+        }
+
+        // simple version with no whitespace
+
+        //check one match with multiple params
+        let mut rc = create_rc("myFunc(x,y,z,xx,yy,zz)");
+        assert!( p_func(&mut rc).is_ok() );
+
+        // check single match with single param
+        rc = create_rc("myFunc2(my1param)");
+        assert!( p_func(&mut rc).is_ok() );
+
+        // repeated calls
+        rc = create_rc("myFunc1(my2param)myFunc2(my2param)");
+        assert!( p_func(&mut rc).is_ok() );
+        assert!( p_func(&mut rc).is_ok() );
+
 
     }
 

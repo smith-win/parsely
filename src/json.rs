@@ -1,44 +1,30 @@
 //! JSON Parsing structs, enums and functions
 
 use std::io::{Read, Bytes};
-use super::internals::{RewindableChars, ParseResult, ParseErr};
+use super::internals::{RewindableChars, ParseResult, ParseErr, Mark};
+
 use super::internals::parsers::*;
 
-/// The first matching parser function
 #[macro_export]
-macro_rules! parse_first {
+macro_rules! parse_match_first {
     // first arg is parser/rewinder, then the args
     ($r:expr, $( $x:expr ),* ) => (
-        println!("baloney"); 
-        $r.parse() ?;
         $(
-            println!(std::stringify!($x));
+            let mark = $r.mark();
+            let result = $x;
+            // here is where we match the result
+            match result {
+                Ok(y) => { println!("There result was good .. {:?} .. ", y); return Ok(()) }, 
+                Err(ParseErr::DidNotMatch) => { println!("Input did not match"); $r.rewind(mark); },
+                Err(ParseErr::Io(x)) => { println!("There was a system I/O error! {:?}", x); return Err(ParseErr::Io(x)); },
+                Err(ParseErr::BadData(s)) => { println!("Bad data {}", s); return Err(ParseErr::BadData(s)); },
+            }
         )*
     );
 }
 
-// /// convert ParseResult<T, ParseErr> into Result<Option<T>, ParseError>
-// /// Such that combinators can be reasonably ergonmic.   Parsing functions 
-// #[macro_export]
-// macro_rules! p_check {
-//     ($e:expr) => {
-//         if let x = Ok($e) { 
-//             Ok(Some(x)) 
-//         } else {
-//             let x = $e.unwrap_err();
-//             Err(x)
-//         }
-//     }
-//         // match $e {
-//         //     Ok(x) => Ok(Some(x)),
-//         //     Err(x)  => match x { 
-//         //             ParseError::Eof => Ok(None),
-//         //             _ => Err(x),
-//         //         }
-//         //     }
-//         // } 
-    
-// }
+/// This is the key to how an optional parse works.ParseErr
+/// Don't mix return types.  All funcs must return ParseResult<x>
 
 /*
   // Take a mark, try 1 then 2
@@ -170,14 +156,27 @@ member_list() {
 
 /// Represents a basic value in JSON, effectively the primitive types (not arrays or objects), 
 /// that are emitted by the parser.
-pub enum JsonValue<'a> {
+/// TODO; how do we make this zero=copy ?? (STring vs &str ??)
+#[derive(Debug)]
+pub enum JsonEvent {
 
-    String(&'a str),
+    /// A string value
+    String(String),
 
     /// Event though it is a number, we'll leave to the client to decide what to co-erce it into (int, float or other)
-    Number(&'a str),
+    Number(String),
+
+    /// Bool is true or false
     Boolean(bool),
-    Null
+
+    // Null keyword
+    Null,
+
+    ObjectStart,
+    ObjectEnd,
+
+    ArrayStart,
+    ArrayEnd,
 
 }
 
@@ -202,12 +201,23 @@ impl <R: Read> JsonParser<R> {
     }
 
 
+    // TODO: remove in favour of re-structuring the JSON parser 
+    pub fn mark(&mut self) -> Mark {
+        self.rc.mark()
+    }
+
+    // TODO: remove in favour of re-structuring the JSON parser 
+    pub fn rewind(&mut self, m: Mark) {
+        self.rc.rewind(m);
+    }
+
+    
+
     /// Starts parsing of a Json doc
     pub fn parse(&mut self) -> ParseResult<()> {
         self.value() ?;
         Ok(())
     }
-
 
 
     fn value(&mut self) -> ParseResult<()> {
@@ -216,30 +226,35 @@ impl <R: Read> JsonParser<R> {
 
         // TODO: value is object or array or primitive ..
         // self.object() ?; 
+        parse_match_first! (self, self.json_string(), self.json_number() );
 
         self.json_string() ?;
         Ok(())
     }
 
-
-
-    fn object(&mut self) -> ParseResult<()> {
+    fn _object(&mut self) -> ParseResult<()> {
 
         match_str("{", &mut self.rc) ?;
         skip_whitespace(&mut self.rc) ?;
-        self.member_list() ? ; 
+        self._member_list() ? ; 
         match_str("}", &mut self.rc) ?;
         Ok(())
     }    
 
+
+    #[inline]
+    fn emit_event(&mut self, val : JsonEvent) {
+        println!("JSON event {:?}", val);
+    }
+
     ///
-    fn member_list(&mut self) -> ParseResult<()> {
+    fn _member_list(&mut self) -> ParseResult<()> {
         // which has a na
         Ok(())
     }
 
 
-    fn member(&mut self) -> ParseResult<()> {
+    fn _member(&mut self) -> ParseResult<()> {
         
         // name, colon, value
         self.json_string() ?;
@@ -252,12 +267,58 @@ impl <R: Read> JsonParser<R> {
     }
 
 
-    // // checks for an escape
-    // #[inline]
-    // fn json_escape(&mut self) -> std::io::Result<()> {
-    // }
+    /// Match a JSON number, the result returned as a string so that
+    /// client can decide how to interpret
+    /// option sign, optional numbers | decimal
+    fn json_number(&mut self) -> ParseResult<()> {
 
-    fn json_string(&mut self) -> ParseResult<String> {
+        skip_whitespace(&mut self.rc) ?;
+        let mut s  = String::new();
+
+        let mut count = 0;
+
+        // optional sign -- could have been "match while"
+        if match_str_optional("-", &mut self.rc)? {
+            s.push('-');
+            count += 1;
+        }
+
+        let match_digit = |c| {
+           c >= '0' && c <= '9'
+        };
+
+        capture_while_mand(match_digit, &mut s, &mut self.rc) ?;
+
+        if s.len() < count {
+            Err(ParseErr::DidNotMatch)
+        } else {
+            self.emit_event(JsonEvent::Number(s));
+            Ok(())
+        }
+
+        // digits 
+
+        // . digit +
+
+        // digits  . digits
+
+        // E+digits or E-digits
+
+        // 'e' sign digits
+        // 'E' sign digits
+
+
+        // digits or a decimal -- here we need optional pattern
+        // e.g. [\-]+ [0-9]* (\. [0-9]*)+ (e|E) ... etc
+
+    }
+
+
+    /// Matches a JSON string
+    fn json_string(&mut self) -> ParseResult<()> {
+
+        // TODO: not too keen on amount of logic in here, the parser library
+        // should provide more
 
         // starts with a quote
         match_str("\"", &mut self.rc) ?;
@@ -289,8 +350,8 @@ impl <R: Read> JsonParser<R> {
                     // need to escape it
                 } else if c == '\"' {
                     // end of string !
-                    println!("Returning string: {}", &s);
-                    return Ok(s);
+                    self.emit_event(JsonEvent::String(s));
+                    return Ok(());
                 } 
 
                 // Doesn't deal with hex \u00ff77
@@ -315,13 +376,12 @@ impl <R: Read> JsonParser<R> {
 #[cfg(test)]
 mod tests {
 
-    ///! Tests!
-    // #[macro_use]
-    // extern crate parsley;
-
     use super::JsonParser;
     use super::ParseResult;
     use crate::internals::parsers::p_chk;
+
+    use crate::parse_match_first;
+    use crate::internals::ParseErr;
 
     use std::io::{Cursor, Read};
 
@@ -329,50 +389,81 @@ mod tests {
         let c = Cursor::new(String::from(s));
         JsonParser::new(c.bytes())
     }
-    
-    
-    #[test]
-    pub fn check_string_no_escapes() -> ParseResult<()> {
-        let mut jp = create_jp("\"Hello, I am a JSON String\"");
-        jp.parse() ?;
 
-        let mut jp = create_jp("\"Hello, I am a \\\"JSON\\\" String\"");
-        jp.parse() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_my_macro_no_args() {
-        // parse_first!();
-    }
     
     #[test]
     pub fn check_my_macro_args() -> ParseResult<()> {
 
         let mut jp = create_jp("\"Hello, I am a \\\"JSON String\\\"\"");
 
-        //parse_first!(1, jp.parse(), 3,"doodle", 5,6,8);
-        parse_first!(jp, 3,"doodle", 5+1,6,8);
-        // parse_first!(1); // this one fails -- need to be consistent in params to type inference works
+        parse_match_first! (&mut jp, some_parse_func(12), some_parse_func(13), some_parse_func_str(4) );
+ 
         Ok(())
     }
 
+
+    fn some_parse_func(i: i32) -> ParseResult<i32> {
+        if i % 2 == 0 {
+            Ok(i+2)
+        } else {
+            Err(ParseErr::DidNotMatch)
+        }
+    }
+
+    fn some_parse_func_str(i: i32) -> ParseResult<String> {
+        if i % 2 == 0 {
+            Ok(String::from("I'm the very model of a modern major general"))
+        } else {
+            Err(ParseErr::DidNotMatch)
+        }
+    }
 
 
     #[test]
-    fn check_macro() -> ParseResult<()> {
-        //let mut jp = create_jp("\"Hello, I am a \\\"JSON String\\\"\"");
-        let mut jp = create_jp("\"Hello, I am a \\\"JSON String\\\"");
-
+    fn check_json_string() -> ParseResult<()> {
+        let mut jp = create_jp("\"Hello, I am a \\\"JSON String\\\"\"");
         let result = p_chk(jp.json_string())?;
         println!("{:?}", result);
 
-        if let Some(_x) = result  {
-            panic!("arrrgh!");
-        }
+        assert!(result.is_some());
 
         Ok(())
     }
-    
+
+
+    #[test]
+    fn check_json_number() -> ParseResult<()> {
+        let mut jp = create_jp("-12345");
+        let result = p_chk(jp.json_number())?;
+        assert!(result.is_some());
+
+
+        // should fail as non-numeric in string
+        let mut jp = create_jp("-12345asas");
+        let result = p_chk(jp.json_number())?;
+        assert!(!result.is_some());
+
+        Ok(())
+    }
+
+
+    #[test]
+    fn check_json_value() -> ParseResult<()> {
+        let mut jp = create_jp("\"banana\"");
+        let result = p_chk(jp.value())?;
+        println!("{:?}", result);
+
+        assert!(result.is_some());
+
+        // check it matches a number too
+        jp = create_jp("12345");
+        let result = p_chk(jp.value())?;
+        println!("{:?}", result);
+
+        assert!(result.is_some());
+
+        Ok(())
+    }
+
 
 }
