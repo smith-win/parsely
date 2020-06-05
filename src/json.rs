@@ -5,23 +5,7 @@ use super::internals::{RewindableChars, ParseResult, ParseErr, Mark};
 
 use super::internals::parsers::*;
 
-#[macro_export]
-macro_rules! parse_match_first {
-    // first arg is parser/rewinder, then the args
-    ($r:expr, $( $x:expr ),* ) => (
-        $(
-            let mark = $r.mark();
-            let result = $x;
-            // here is where we match the result
-            match result {
-                Ok(y) => { println!("There result was good .. {:?} .. ", y); return Ok(()) }, 
-                Err(ParseErr::DidNotMatch) => { println!("Input did not match"); $r.rewind(mark); },
-                Err(ParseErr::Io(x)) => { println!("There was a system I/O error! {:?}", x); return Err(ParseErr::Io(x)); },
-                Err(ParseErr::BadData(s)) => { println!("Bad data {}", s); return Err(ParseErr::BadData(s)); },
-            }
-        )*
-    );
-}
+
 
 /// This is the key to how an optional parse works.ParseErr
 /// Don't mix return types.  All funcs must return ParseResult<x>
@@ -221,24 +205,30 @@ impl <R: Read> JsonParser<R> {
 
 
     fn value(&mut self) -> ParseResult<()> {
-
         skip_whitespace(&mut self.rc) ?;
 
         // TODO: value is object or array or primitive ..
         // self.object() ?; 
-        parse_match_first! (self, self.json_string(), self.json_number() );
-
-        self.json_string() ?;
-        Ok(())
+        match_or! (&mut self.rc, 
+            self.json_string(), 
+            self.json_number(),
+            self.json_object() 
+        )
     }
 
-    fn _object(&mut self) -> ParseResult<()> {
 
-        match_str("{", &mut self.rc) ?;
-        skip_whitespace(&mut self.rc) ?;
-        self._member_list() ? ; 
-        match_str("}", &mut self.rc) ?;
-        Ok(())
+
+
+
+    fn json_object(&mut self) -> ParseResult<()> {
+
+        match_all!(&mut self.rc,
+            match_str("{", &mut self.rc),
+            skip_whitespace(&mut self.rc),
+            self.json_member_list(), 
+            skip_whitespace(&mut self.rc),
+            match_str("}", &mut self.rc)
+        )
     }    
 
 
@@ -248,13 +238,16 @@ impl <R: Read> JsonParser<R> {
     }
 
     ///
-    fn _member_list(&mut self) -> ParseResult<()> {
-        // which has a na
-        Ok(())
+    fn json_member_list(&mut self) -> ParseResult<()> {
+        skip_whitespace(&mut self.rc);
+        match_or! (&mut self.rc, 
+            match_all!(&mut self.rc, self.json_member(), skip_whitespace(&mut self.rc), match_str(",", &mut self.rc), skip_whitespace(&mut self.rc), self.json_member_list()),
+            self.json_member()
+        )
     }
 
 
-    fn _member(&mut self) -> ParseResult<()> {
+    fn json_member(&mut self) -> ParseResult<()> {
         
         // name, colon, value
         self.json_string() ?;
@@ -264,6 +257,14 @@ impl <R: Read> JsonParser<R> {
         self.value() ?;
         // 
         Ok(())
+    }
+
+
+    // So question is how to emit an event (pausing the parsing)
+    // like some callback .. but iterating
+    // like "next token" ... does a return pop up the stack??
+    fn _emit_event(&self) {
+
     }
 
 
@@ -320,6 +321,7 @@ impl <R: Read> JsonParser<R> {
         // TODO: not too keen on amount of logic in here, the parser library
         // should provide more
 
+
         // starts with a quote
         match_str("\"", &mut self.rc) ?;
 
@@ -356,6 +358,11 @@ impl <R: Read> JsonParser<R> {
 
                 // Doesn't deal with hex \u00ff77
                 escaped = false;
+
+                if c == '\n' || c == '\r' {
+                    return Err(ParseErr::BadData(String::from("\r or \n not allowed in string")));
+                }
+
                 // just append to result
                 s.push(c);
 
@@ -380,42 +387,11 @@ mod tests {
     use super::ParseResult;
     use crate::internals::parsers::p_chk;
 
-    use crate::parse_match_first;
-    use crate::internals::ParseErr;
-
     use std::io::{Cursor, Read};
 
     fn create_jp(s: &str) -> JsonParser<Cursor<String>> {
         let c = Cursor::new(String::from(s));
         JsonParser::new(c.bytes())
-    }
-
-    
-    #[test]
-    pub fn check_my_macro_args() -> ParseResult<()> {
-
-        let mut jp = create_jp("\"Hello, I am a \\\"JSON String\\\"\"");
-
-        parse_match_first! (&mut jp, some_parse_func(12), some_parse_func(13), some_parse_func_str(4) );
- 
-        Ok(())
-    }
-
-
-    fn some_parse_func(i: i32) -> ParseResult<i32> {
-        if i % 2 == 0 {
-            Ok(i+2)
-        } else {
-            Err(ParseErr::DidNotMatch)
-        }
-    }
-
-    fn some_parse_func_str(i: i32) -> ParseResult<String> {
-        if i % 2 == 0 {
-            Ok(String::from("I'm the very model of a modern major general"))
-        } else {
-            Err(ParseErr::DidNotMatch)
-        }
     }
 
 
@@ -438,7 +414,8 @@ mod tests {
         assert!(result.is_some());
 
 
-        // should fail as non-numeric in string
+        // should fail as non-numeric in string ?
+        // or maybe fail on next ("unexpected character 'a'")
         let mut jp = create_jp("-12345asas");
         let result = p_chk(jp.json_number())?;
         assert!(!result.is_some());
@@ -448,17 +425,63 @@ mod tests {
 
 
     #[test]
+    fn check_json_member_list() { 
+        println!("-----");
+        let mut jp = create_jp(r##""hello":2123"##);
+        let mut result =jp.json_member_list();
+        assert!(result.is_ok());
+
+        println!("-----");
+        jp = create_jp(r##""hello":2123","banana":123"##);
+        result =jp.json_member_list();
+        assert!(result.is_ok());
+
+        println!("-----");
+        jp = create_jp(r##"    "hello"  : 2123"  ,   "banana"  :  123  "##);
+        result =jp.json_member_list();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_json_object() { 
+        let mut jp = create_jp(r##"{ "hello":2123 }"##);
+        let result =jp.json_object();
+        assert!(result.is_ok());
+
+        let mut jp = create_jp(r##"{ "hello":2123 , "apple": "a day", "another": 12}"##);
+        let result =jp.json_object();
+        assert!(result.is_ok());
+
+        
+        println!("-----");
+        let mut jp = create_jp(r##"{ "hello":2123, }"##);
+        let result =jp.json_object();
+        assert!(result.is_err());
+
+    }
+
+
+    #[test]
+    fn check_nested_json_object() { 
+        // double nested objects!
+        let mut jp = create_jp(r##"{ "hello":2123, "nested":{ "a":1, "b":"2"} }"##);
+        let result =jp.json_object();
+        assert!(result.is_ok());
+
+    }
+
+    
+    #[test]
     fn check_json_value() -> ParseResult<()> {
         let mut jp = create_jp("\"banana\"");
+        println!("-----");
         let result = p_chk(jp.value())?;
-        println!("{:?}", result);
 
         assert!(result.is_some());
 
         // check it matches a number too
         jp = create_jp("12345");
         let result = p_chk(jp.value())?;
-        println!("{:?}", result);
 
         assert!(result.is_some());
 
