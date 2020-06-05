@@ -468,9 +468,14 @@ mod tests {
         let result =jp.json_object();
         assert!(result.is_ok());
 
+        // double nested objects!
+        let mut jp = create_jp(r##"{ "hello":2123, "nested":{ "a":1, "b":"2", "c": {"x2":1} }, "nested-again": {"a":3} }"##);
+        let result =jp.json_object();
+        assert!(result.is_ok());
+        
     }
 
-    
+
     #[test]
     fn check_json_value() -> ParseResult<()> {
         let mut jp = create_jp("\"banana\"");
