@@ -212,13 +212,22 @@ impl <R: Read> JsonParser<R> {
         match_or! (&mut self.rc, 
             self.json_string(), 
             self.json_number(),
-            self.json_object() 
+            self.json_object(),
+            self.json_array()
         )
     }
 
 
+    fn json_array(&mut self) -> ParseResult<()> {
 
-
+        match_all!(&mut self.rc,
+            match_str("[", &mut self.rc),
+            skip_whitespace(&mut self.rc),
+            self.json_value_list(), 
+            skip_whitespace(&mut self.rc),
+            match_str("]", &mut self.rc)
+        )
+    }    
 
     fn json_object(&mut self) -> ParseResult<()> {
 
@@ -237,13 +246,43 @@ impl <R: Read> JsonParser<R> {
         println!("JSON event {:?}", val);
     }
 
+    fn json_value_list(&mut self) -> ParseResult<()> {
+        // TODO: check with below and see if we can common the "list"
+        loop {
+            skip_whitespace(&mut self.rc);
+            self.value()?;
+            skip_whitespace(&mut self.rc);
+
+            let m = self.rc.mark();
+            match match_char(',', &mut self.rc) {
+                Ok(_) => { /* do nothing, next loop */} ,
+                Err(ParseErr::DidNotMatch) => { self.rc.rewind(m); break},
+                Err(_) => { return Err( ParseErr::BadData("TODO: fix".to_owned()))  /* TOOD: deal with IO error correctly */ }
+            }
+        }
+
+        Ok(())        
+    }
+
     ///
     fn json_member_list(&mut self) -> ParseResult<()> {
-        skip_whitespace(&mut self.rc);
-        match_or! (&mut self.rc, 
-            match_all!(&mut self.rc, self.json_member(), skip_whitespace(&mut self.rc), match_str(",", &mut self.rc), skip_whitespace(&mut self.rc), self.json_member_list()),
-            self.json_member()
-        )
+        
+        // A list is such a common pattern
+        loop {
+            skip_whitespace(&mut self.rc);
+            self.json_member()?;
+            skip_whitespace(&mut self.rc);
+
+            let m = self.rc.mark();
+            match match_char(',', &mut self.rc) {
+                Ok(_) => { /* do nothing, next loop */} ,
+                Err(ParseErr::DidNotMatch) => { self.rc.rewind(m); break},
+                Err(_) => { return Err( ParseErr::BadData("TODO: fix".to_owned()))  /* TOOD: deal with IO error correctly */ }
+            }
+        }
+
+        Ok(())
+
     }
 
 
@@ -468,6 +507,7 @@ mod tests {
         let result =jp.json_object();
         assert!(result.is_ok());
 
+        println!("----------");
         // double nested objects!
         let mut jp = create_jp(r##"{ "hello":2123, "nested":{ "a":1, "b":"2", "c": {"x2":1} }, "nested-again": {"a":3} }"##);
         let result =jp.json_object();
@@ -488,6 +528,44 @@ mod tests {
         jp = create_jp("12345");
         let result = p_chk(jp.value())?;
 
+        assert!(result.is_some());
+
+        Ok(())
+    }
+
+
+    #[test]
+    fn check_json_array() -> ParseResult<()> {
+        // all numbers
+        let mut jp = create_jp(r##"[1, 2, 3, 4, 5, 6, 7, 8, 9] "##);
+        let mut result = p_chk(jp.json_array())?;
+        assert!(result.is_some());
+        println!("-----");
+
+        // strings
+        jp = create_jp(r##"["one", "two", "three", "four"] "##);
+        result = p_chk(jp.json_array())?;
+        assert!(result.is_some());
+
+        // strings + numbers 
+        jp = create_jp(r##"["one", 99, "three", -1] "##);
+        result = p_chk(jp.json_array())?;
+        assert!(result.is_some());
+
+        // objects
+        jp = create_jp(r##"[ {"a":1}, { "b": { "c":1 } }, "three", -1] "##);
+        result = p_chk(jp.json_array())?;
+        assert!(result.is_some());
+
+        Ok(())
+
+    }
+
+    #[test]
+    fn check_nested_arrays() -> ParseResult<()>  {
+        // nested arrays 
+        let mut jp = create_jp(r##"[ {"a":1}, { "b": { "c":1 } }, "three", [ [1, 2], [3], [4,5,"c"] ] ]"##);
+        let result = p_chk(jp.json_array())?;
         assert!(result.is_some());
 
         Ok(())

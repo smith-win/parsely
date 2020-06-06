@@ -91,47 +91,19 @@ This is the basic building block of a parser combinator library.
     -- the basic function parser is working
     -- created a skeleton macro that can be basis for optional matching (should check return types!)
 
+06 Jun
+    -- have basic JSON (no arrays) working inclding nested objects
+    -- the matching of lists is a common pattern and I think can be optimised
 
-psuedo code below.
-Example input: lamb carrot cabbage
-    - skip over white space
-    - str("lamb") matches  => meat is "top" level, so re-wind no used.
-    - skip over white space (accept but don't do anything)
-    - .. and similar for carror, cabbage
+TODO:
+    - implement common "list" pattern .. for zero length, 1 or more object members / array members
+    - impement arrays
+    - implement numbers (decimals, negatives, exponentails +/- on exponent and mantissa)
+    - tidy up generics .. use over just the Read trait to make code tider
+    - ensure numbers/nulls/true/false working
+    - remove all warnings!
+    - refactor, refactor, refactor, 
+    - clippy
+    - try over the Canada data
+    - .. profile / profile / profile !!! (possible to compare with Jackson .. maybe "day job" files)
 
-Example input: lamb beef cabbage
-    - skip over white space
-    - --> one_of !! MARK
-        - str("lamb") matches  
-    - <-- one_of !! DISPOSE
-    - whitespace
-    - one_of MARK! (rewind is possible)
-    -   beef - fails to match carrot  !! REWIND
-    -   beef - fails to match cabbge  !! REWIND
-    - 
-
-meal() {
-    whitespace(), // optional
-    meat() ,      // mand
-    whitespace(),
-    veg() ,
-    whitespace(),
-    veg()
-}
-
-/// 
-whitepace() {
-
-}
-
-meat() {
-    one_of (
-        str("lamb"), str("chicken")
-    )
-}
-
-veg() [
-    one_of (
-        str("carrot"), str("cabbage")
-    )
-]
