@@ -448,16 +448,29 @@ mod tests {
 
     #[test]
     fn check_json_number() -> ParseResult<()> {
-        let mut jp = create_jp("-12345");
-        let result = p_chk(jp.json_number())?;
+        let mut jp = create_jp("12345");
+        let mut result = p_chk(jp.json_number())?;
+        assert!(result.is_some());
+
+        jp = create_jp("-12345");
+        result = p_chk(jp.json_number())?;
         assert!(result.is_some());
 
 
-        // should fail as non-numeric in string ?
-        // or maybe fail on next ("unexpected character 'a'")
-        let mut jp = create_jp("-12345asas");
-        let result = p_chk(jp.json_number())?;
-        assert!(!result.is_some());
+        jp = create_jp("0");
+        result = p_chk(jp.json_number())?;
+        assert!(result.is_some());
+
+        // start decimal suppport
+        jp = create_jp("10.23");
+        result = p_chk(jp.json_number())?;
+        assert!(result.is_some());
+
+
+        jp = create_jp("-10.23");
+        result = p_chk(jp.json_number())?;
+        assert!(result.is_some());
+
 
         Ok(())
     }

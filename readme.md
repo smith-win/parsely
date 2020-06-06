@@ -96,9 +96,9 @@ This is the basic building block of a parser combinator library.
     -- the matching of lists is a common pattern and I think can be optimised
 
 TODO:
-    - implement common "list" pattern .. for zero length, 1 or more object members / array members
-    - impement arrays
+    - DONE! impement arrays
     - implement numbers (decimals, negatives, exponentails +/- on exponent and mantissa)
+    - implement common "list" pattern .. for zero length, 1 or more object members / array members
     - tidy up generics .. use over just the Read trait to make code tider
     - ensure numbers/nulls/true/false working
     - remove all warnings!
