@@ -97,9 +97,19 @@ This is the basic building block of a parser combinator library.
 
 TODO:
     - DONE! impement arrays
-    - implement numbers (decimals, negatives, exponentails +/- on exponent and mantissa)
+    
+    - implement numbers (decimals(done), negatives(done), 
+        !!! exponentails +/- on exponent and mantissa)
+    
+    - UTF-8 handling :-( breaks on Canada file
+        -- ignored .. can we skip to u8 rather than char ..  alot less memory to shuffle about
+    
     - implement common "list" pattern .. for zero length, 1 or more object members / array members
+
+    - events to match Jackson
+
     - tidy up generics .. use over just the Read trait to make code tider
+        - e.g. not having to call "bytes()" on to create
     - ensure numbers/nulls/true/false working
     - remove all warnings!
     - refactor, refactor, refactor, 
@@ -107,3 +117,25 @@ TODO:
     - try over the Canada data
     - .. profile / profile / profile !!! (possible to compare with Jackson .. maybe "day job" files)
 
+
+
+
+UTF8 Notes
+
+
+in UTF -- all important control characters are in the ASCII range, 
+and numbers etc .. so we only need to worry about those
+
+looking at the encoding rules ... we can "ignore" anything > 127 ? (just skip it)
+
+1-4 bytes
+
+1-byte = 0xxxxxxx
+2-byte = 110xxxxx 10xxxxxx
+3-byte = 1110xxxx 10xxxxxx 10xxxxxx
+4-byte = 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+
+192 
+
+10xxxxxx means >= 10000000 < 11000000
+means >= 128 && < 192

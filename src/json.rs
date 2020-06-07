@@ -213,7 +213,8 @@ impl <R: Read> JsonParser<R> {
             self.json_string(), 
             self.json_number(),
             self.json_object(),
-            self.json_array()
+            self.json_array(),
+            match_str("null", &mut self.rc)
         )
     }
 
@@ -242,16 +243,17 @@ impl <R: Read> JsonParser<R> {
 
 
     #[inline]
-    fn emit_event(&mut self, val : JsonEvent) {
-        println!("JSON event {:?}", val);
+    fn emit_event(&mut self, _val : JsonEvent) {
+        //println!("JSON event {:?}", val);
     }
+
 
     fn json_value_list(&mut self) -> ParseResult<()> {
         // TODO: check with below and see if we can common the "list"
         loop {
-            skip_whitespace(&mut self.rc);
+            skip_whitespace(&mut self.rc)?;
             self.value()?;
-            skip_whitespace(&mut self.rc);
+            skip_whitespace(&mut self.rc)?;
 
             let m = self.rc.mark();
             match match_char(',', &mut self.rc) {
@@ -269,9 +271,9 @@ impl <R: Read> JsonParser<R> {
         
         // A list is such a common pattern
         loop {
-            skip_whitespace(&mut self.rc);
+            skip_whitespace(&mut self.rc)?;
             self.json_member()?;
-            skip_whitespace(&mut self.rc);
+            skip_whitespace(&mut self.rc)?;
 
             let m = self.rc.mark();
             match match_char(',', &mut self.rc) {
@@ -328,6 +330,16 @@ impl <R: Read> JsonParser<R> {
         };
 
         capture_while_mand(match_digit, &mut s, &mut self.rc) ?;
+
+        // is the next a "." ?
+        if match_str_optional(".", &mut self.rc)? {
+            s.push('.');
+            count += 1;
+
+            capture_while_mand(match_digit, &mut s, &mut self.rc) ?;
+        }
+
+
 
         if s.len() < count {
             Err(ParseErr::DidNotMatch)

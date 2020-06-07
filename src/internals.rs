@@ -95,17 +95,23 @@ impl <R: Read> Iterator for Chars<R> {
     type Item = std::io::Result<char>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.inner.next() {
-            Some(r) => {
-                if r.is_ok() {
-                    // convert -- worry about not ASCII later!!
-                    // what to do with full UTF-8 compliance ??
-                    Some(Ok(r.unwrap() as char))
-                } else {
-                    Some(Err(r.unwrap_err()))
+        loop {
+            match self.inner.next() {
+                Some(r) => {
+                    if r.is_ok() {
+                        // convert -- worry about not ASCII later!!
+                        // what to do with full UTF-8 compliance ??
+
+                        let b = r.unwrap();
+                        if b < 128 { 
+                            return  Some(Ok(b as char))
+                        }
+                    } else {
+                        return Some(Err(r.unwrap_err()))
+                    }
                 }
+                None => return None,
             }
-            None => None,
         }
     }
 }
@@ -167,11 +173,12 @@ impl <R: Read> Iterator for RewindableChars<R> {
     type Item = std::io::Result<char>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // TODO: conversion of next char in the buffer for >127
 
         /* first we check our buffer and move the pointer along */
         if self.pos < self.buffer.len() {
             self.pos += 1;
-            return Some(Ok(*self.buffer.get(self.pos-1).unwrap() as char)); // TODO: conversion of next char in the buffer for >127
+            return Some(Ok(*self.buffer.get(self.pos-1).unwrap() as char)); 
         }
 
         match self.chars.next() {
