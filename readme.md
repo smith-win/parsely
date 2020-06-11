@@ -139,3 +139,39 @@ looking at the encoding rules ... we can "ignore" anything > 127 ? (just skip it
 
 10xxxxxx means >= 10000000 < 11000000
 means >= 128 && < 192
+
+
+Performance notes:
+
+1) How stupid am I???   Our internal buffer we never called "accept" to clear it.
+    - when do we clear ?
+    - json, we know what must be next
+
+
+
+
+extern crate parsely;
+
+
+// use parsely::json::JsonParser;
+use parsely::json2::JsonParser;
+use std::io::{Read, BufReader, Bytes};
+use std::fs::File;
+
+fn main() {
+
+    let args : Vec<String> = std::env::args().collect();
+
+    let filename =  args.get(1).unwrap();
+    
+    for i in 1..3 {
+        println!("Parsing #{}", i);
+        let f = std::fs::File::open( filename ).unwrap();
+        let buf = BufReader::new(f);
+        // let mut json = JsonParser::new(buf.bytes());
+        // json.parse().unwrap();
+        let mut json = JsonParser::new(buf);
+        json.parse().unwrap();
+    }
+
+}

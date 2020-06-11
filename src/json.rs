@@ -6,138 +6,6 @@ use super::internals::{RewindableChars, ParseResult, ParseErr, Mark};
 use super::internals::parsers::*;
 
 
-
-/// This is the key to how an optional parse works.ParseErr
-/// Don't mix return types.  All funcs must return ParseResult<x>
-
-/*
-  // Take a mark, try 1 then 2
-        let mark = rc.mark();
-
-        let mut matched = false;
-
-        match func1(rc) {
-            Ok(b) => matched = b ,
-            Err(e) => {
-                    // Eof may not be fatal in case of option
-                    if let ParseErr::Eof = e { return Err(e) }
-                }
-        };
-
-        if matched {
-            return Ok(true);
-        } 
-        
-        // Even if EOF, can rewind
-        rc.rewind(mark);
-        return match func2(rc) {
-            Ok(b) => Ok(b) ,
-            Err(e) => Err(e)
-        };
-*/
-/*
-
-[
-    { "name" : "Stuart"}
-    , { "name" : "Sharon"}
-    , { "name" : "Emily"}
-]
-
-=>
-
-// So what are the parameters & returns?
-
-So, should return the 
-    1) matched item, and remaining stream
-    2) in case of failure - the error 
-
-Result<> -- seems to fit.
-
-How to make stream immutable?  Who decides on re-wind
-
-Don't want all json in memory!!
-
-.. only an "or" rewinds -- as it gives option to try somethign different
-.. in case below ("one of")
-    .. mark 
-        if f1.match.is_err() stream.rewind_to_mark()
-        
-        ## THIS IS THE KEY I THINK TO SUCCESS .. ONLY WHEN AN OPTION DO WE REWIND
-         ... what about "lists" .. last item is optional (JSON allows empty lists)
-
-
-.. can we use 
-
-json() {
-    value()
-}
-
-value() {
-    one_of( 
-        array(),
-        object(),
-        primitive(),
-    )
-}
-
-primitive() {
-    one_of(
-        str("true"), str("null"), str("false"), json_string(), json_number()
-    )
-}
-
-member() {
-    json_string();
-    whitespace() /*optional */
-    primitive();
-}
-
-object() {
-    str("{");
-    whitespace();
-    zero_or_more(
-        member_list()
-    )
-}
-
-
-member_list() {
-    // hmm workout how to spec.
-}
-
-
-    (Start JSON)
-    value
-        ##literal## true|false|null
-        number
-        string
-        array
-        object
-
-    string: quote  char_sequence quote
-
-    char_sequence:  char*
-
-    char:
-        \u
-        \r 
-        \n
-        \"
-        \\
-
-    number:
-        int
-        int frac E int
-
-    int:
-        [+|-] [0-9]+
-
-    object: { member_list }
-        
-
-*/
-
-
 /// Represents a basic value in JSON, effectively the primitive types (not arrays or objects), 
 /// that are emitted by the parser.
 /// TODO; how do we make this zero=copy ?? (STring vs &str ??)
@@ -215,6 +83,7 @@ impl <R: Read> JsonParser<R> {
             self.json_object(),
             self.json_array(),
             match_str("null", &mut self.rc)
+            // TODO: true and false
         )
     }
 
@@ -232,13 +101,16 @@ impl <R: Read> JsonParser<R> {
 
     fn json_object(&mut self) -> ParseResult<()> {
 
+
         match_all!(&mut self.rc,
             match_str("{", &mut self.rc),
             skip_whitespace(&mut self.rc),
             self.json_member_list(), 
             skip_whitespace(&mut self.rc),
             match_str("}", &mut self.rc)
-        )
+        ) ?;
+
+        Ok(())
     }    
 
 

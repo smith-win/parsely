@@ -5,6 +5,7 @@ extern crate log;
 pub mod internals;
 
 pub mod json;
+pub mod json2;
 
 // Parsing utility module based around parser combinators.
 // Also providing core parsing capability for common
