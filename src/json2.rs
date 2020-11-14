@@ -1,6 +1,6 @@
 //! Json parser, using only an iterator over bytes
 
-use std::io::{Read, Bytes};
+use std::io::Read;
 use crate::internals::{ParseResult, ParseErr};
 
 const U8_START_OBJ:u8 = '{' as u8;
@@ -38,10 +38,10 @@ macro_rules! byte_seq {
 pub enum JsonEvent2<'a> {
 
     /// A string value
-    String(&'a [u8]),
+    String(&'a str),
 
     /// Event though it is a number, we'll leave to the client to decide what to co-erce it into (int, float or other)
-    Number(&'a [u8]),
+    Number(&'a str),
 
     /// Bool is true or false
     Boolean(bool),
@@ -60,12 +60,22 @@ pub enum JsonEvent2<'a> {
 pub struct JsonParser<R: Read> {
 
     /// Peekable means we can "look ahed" in the iteration
-    bytes: Bytes<R>,
+    // bytes: Bytes<R>,
+    read: R,
+
+    /// Local buffer seems faster than Reader.bytes() / Bytes
+    buffer: Box<[u8]>,
+
+    // buffer position and capacty info
+    buf_pos: usize,
+    buf_cap: usize,
 
     /// Peeked byte
     peeked: Option<u8>,
 
-    counts: (u32, u32)
+    counts: (u32, u32),
+
+    string_buff: String
 
 }
 
@@ -74,19 +84,23 @@ impl <R: Read> JsonParser<R> {
 
     pub fn new(r: R) -> JsonParser<R> {
         JsonParser {
-            bytes: r.bytes(),
+            read: r,
             peeked: None,
-            counts: (0, 0)
+            counts: (0, 0),
+            buffer : Box::new([0u8; 8*1024]),
+            buf_pos: 0,
+            buf_cap: 0,
+            string_buff : String::with_capacity(300), // guess at effective initial size
         }
     }
 
 
     //
-    fn emit_token(&mut self, je: JsonEvent2) {
+    fn emit_token(&self, je: JsonEvent2) {
         match je {
-            JsonEvent2::String(s) => {std::str::from_utf8(s); self.counts.0 += 1 },
-            JsonEvent2::Number(digits) => {std::str::from_utf8(digits); self.counts.0 += 1 },
-            JsonEvent2::ObjectStart => self.counts.1 += 1,
+            JsonEvent2::String( _s ) => {}, //{std::str::from_utf8(s); self.counts.0 += 1 },
+            JsonEvent2::Number( _digits) => {}, //{std::str::from_utf8(digits); self.counts.0 += 1 },
+            // JsonEvent2::ObjectStart => {}, self.counts.1 += 1,
             _ => {},
         }
     }
@@ -109,14 +123,30 @@ impl <R: Read> JsonParser<R> {
             return Ok(self.peeked.take());
         } 
 
-        let x = self.bytes.next();
-        // checkout the "transpose" method
-        match x {
-            Some ( Ok (n)) => Ok(Some(n)),
-            Some ( Err( io) ) => Err(ParseErr::Io( io )),
-            None => Ok(None),
-            // _  => Err(ParseErr::DidNotMatch)
-        }  
+        if self.buf_pos < self.buf_cap {
+            let r = self.buffer[self.buf_pos];
+            self.buf_pos += 1;
+            return Ok(Some(r));
+        }
+
+        self.buf_pos = 0;
+
+        // re-fill the buffer
+        match self.read.read(&mut *self.buffer) {
+            Ok(n) => self.buf_cap = n,
+            Err(io) => return Err(ParseErr::Io(io)),
+        }
+
+        // this is same block as above .. so we could simplify somehow
+        if self.buf_pos < self.buf_cap {
+            let r = self.buffer[self.buf_pos];
+            self.buf_pos +=1;
+            Ok(Some(r))
+        } else {
+            Ok(None)
+        }
+
+
     }
 
 
@@ -199,11 +229,10 @@ impl <R: Read> JsonParser<R> {
     fn match_number(&mut self) -> ParseResult<()> {
 
         self.skip_whitespace() ?;
-        let mut s  = String::new();
 
         // optional sign -- could have been "match while"
         if let Some( U8_MINUS ) = self.peek()? {
-            s.push('-');
+            // self.string_buff.push('-');
             self.next() ?;
         }
 
@@ -216,7 +245,7 @@ impl <R: Read> JsonParser<R> {
         while let Some (n) = self.peek()? {
             if n >= '0' as u8  && n <= '9' as u8 {
                 self.next()? ;
-                s.push(n as char);
+                // self.string_buff.push(n as char);
                 count +=1;
             } else {
                 break;
@@ -231,12 +260,12 @@ impl <R: Read> JsonParser<R> {
         count = 0;
         if let Some( U8_PERIOD ) = self.peek()? {
             // same again ..
-            s.push('.');
+            // self.string_buf.push('.');
             self.next() ?;
             while let Some (n) = self.peek()? {
                 if n >= '0' as u8  && n <= '9' as u8 {
                     self.next()? ;
-                    s.push(n as char);
+                    // self.string_buf.push(n as char);
                     count +=1;
                 } else {
                     break;
@@ -244,7 +273,7 @@ impl <R: Read> JsonParser<R> {
             }
         }
 
-        self.emit_token(JsonEvent2::Number(s.as_bytes()));
+        self.emit_token(JsonEvent2::Number(self.string_buff.as_str()));
         Ok(())
         // digits 
 
@@ -269,14 +298,16 @@ impl <R: Read> JsonParser<R> {
         self.match_char( U8_QUOTE ) ?;
 
         // TODO: try and get directly into our required byte slice
-        let mut s = String::new();
+        //let mut s = String::new();
+        self.string_buff.clear();
         let mut escaped = false;
         loop {
-            let x = self.bytes.next();
+            let x = self.next() ?;
             if x.is_some() {
 
+                // DANGER .. unwrap
                 // NB: see how unwrap is std::io::Result, so I should be able to "?" operator it
-                let mut c = x.unwrap() ?;
+                let mut c = x.unwrap();
                 
                 if c == U8_ESCAPE {
                     escaped = true;
@@ -305,7 +336,8 @@ impl <R: Read> JsonParser<R> {
                 } else if c == U8_QUOTE {
                     // end of string !
                     // TODO: zero-copy of string please!
-                    self.emit_token(JsonEvent2::String(s.as_bytes())  );
+                    let the_str = self.string_buff.as_str();
+                    self.emit_token(JsonEvent2::String( the_str ));
                     return Ok(());
                 } 
 
@@ -313,7 +345,7 @@ impl <R: Read> JsonParser<R> {
 
                 // TODO: try not to cast to char?
                 // just append to result
-                s.push(c as char);
+                self.string_buff.push(c as char);
 
             } else {
                 // Unterminated string constant
