@@ -35,13 +35,13 @@ macro_rules! byte_seq {
 
 /// What does life time mean?
 #[derive(Debug)]
-pub enum JsonEvent2<'a> {
+pub enum JsonEvent2 {
 
     /// A string value
-    String(&'a str),
+    String(/* &'a str */),
 
     /// Event though it is a number, we'll leave to the client to decide what to co-erce it into (int, float or other)
-    Number(&'a str),
+    Number(/* &'a str */),
 
     /// Bool is true or false
     Boolean(bool),
@@ -96,11 +96,11 @@ impl <R: Read> JsonParser<R> {
 
 
     //
-    fn emit_token(&self, je: JsonEvent2) {
+    fn emit_token(&mut self, je: JsonEvent2) {
         match je {
-            JsonEvent2::String( _s ) => {}, //{std::str::from_utf8(s); self.counts.0 += 1 },
-            JsonEvent2::Number( _digits) => {}, //{std::str::from_utf8(digits); self.counts.0 += 1 },
-            // JsonEvent2::ObjectStart => {}, self.counts.1 += 1,
+            JsonEvent2::String() => { self.counts.0 += 1 },
+            JsonEvent2::Number() => { self.counts.0 += 1 },
+            JsonEvent2::ObjectStart => self.counts.1 += 1,
             _ => {},
         }
     }
@@ -129,7 +129,7 @@ impl <R: Read> JsonParser<R> {
         } 
 
         // Checkif that < buffer.len() means we skip extra bounds check
-        if self.buf_pos < self.buf_cap  && self.buf_pos < self.buffer.len() {
+        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
             let r = self.buffer[self.buf_pos];
             self.buf_pos += 1;
             return Ok(Some(r));
@@ -144,7 +144,7 @@ impl <R: Read> JsonParser<R> {
         }
 
         // this is same block as above .. so we could simplify somehow
-        if self.buf_pos < self.buf_cap {
+        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
             let r = self.buffer[self.buf_pos];
             self.buf_pos +=1;
             Ok(Some(r))
@@ -241,7 +241,7 @@ impl <R: Read> JsonParser<R> {
 
         // optional sign -- could have been "match while"
         if let Some( U8_MINUS ) = self.peek()? {
-            // self.string_buff.push('-');
+            self.string_buff.push('-');
             self.next() ?;
         }
 
@@ -254,7 +254,7 @@ impl <R: Read> JsonParser<R> {
         while let Some (n) = self.peek()? {
             if n >= '0' as u8  && n <= '9' as u8 {
                 self.next()? ;
-                // self.string_buff.push(n as char);
+                self.string_buff.push(n as char);
                 count +=1;
             } else {
                 break;
@@ -269,12 +269,12 @@ impl <R: Read> JsonParser<R> {
         count = 0;
         if let Some( U8_PERIOD ) = self.peek()? {
             // same again ..
-            // self.string_buf.push('.');
+            self.string_buff.push('.');
             self.next() ?;
             while let Some (n) = self.peek()? {
                 if n >= '0' as u8  && n <= '9' as u8 {
                     self.next()? ;
-                    // self.string_buf.push(n as char);
+                    self.string_buff.push(n as char);
                     count +=1;
                 } else {
                     break;
@@ -282,7 +282,8 @@ impl <R: Read> JsonParser<R> {
             }
         }
 
-        self.emit_token(JsonEvent2::Number(self.string_buff.as_str()));
+        //let tmp_str = self.string_buff.as_str();
+        self.emit_token(JsonEvent2::Number());
         Ok(())
         // digits 
 
@@ -345,8 +346,8 @@ impl <R: Read> JsonParser<R> {
                 } else if c == U8_QUOTE {
                     // end of string !
                     // TODO: zero-copy of string please!
-                    let the_str = self.string_buff.as_str();
-                    self.emit_token(JsonEvent2::String( the_str ));
+                    // let the_str = self.string_buff.as_str();
+                    self.emit_token(JsonEvent2::String( /* the_str */ ));
                     return Ok(());
                 } 
 
