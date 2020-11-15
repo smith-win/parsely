@@ -87,7 +87,7 @@ impl <R: Read> JsonParser<R> {
             read: r,
             peeked: None,
             counts: (0, 0),
-            buffer : Box::new([0u8; 8*1024]),
+            buffer : Box::new([0u8; 8 * 1024]),
             buf_pos: 0,
             buf_cap: 0,
             string_buff : String::with_capacity(300), // guess at effective initial size
@@ -106,6 +106,8 @@ impl <R: Read> JsonParser<R> {
     }
 
 
+    /// "Peek" the next byte - used if we want to check if the next token
+    /// is equal to something, and only consume it if is.  (Say we want ot check for  keyword etc})
     fn peek(&mut self) -> ParseResult<Option<u8>> {
         if self.peeked.is_some() {
             return Ok(self.peeked);
@@ -116,6 +118,9 @@ impl <R: Read> JsonParser<R> {
         Ok(self.peeked)
     }
 
+
+
+    /// We can keep this up by using peek pos to simulate a peek?  Rather than 
     /// 
     fn next(&mut self) -> ParseResult<Option<u8>> {
 
@@ -123,7 +128,8 @@ impl <R: Read> JsonParser<R> {
             return Ok(self.peeked.take());
         } 
 
-        if self.buf_pos < self.buf_cap {
+        // Checkif that < buffer.len() means we skip extra bounds check
+        if self.buf_pos < self.buf_cap  && self.buf_pos < self.buffer.len() {
             let r = self.buffer[self.buf_pos];
             self.buf_pos += 1;
             return Ok(Some(r));
@@ -146,8 +152,10 @@ impl <R: Read> JsonParser<R> {
             Ok(None)
         }
 
-
     }
+
+
+
 
 
     /// Moves on until next char is whitespace
@@ -217,6 +225,7 @@ impl <R: Read> JsonParser<R> {
 
 
     /// Don't inline it -- check it makes go any faster!
+    #[inline]
     fn match_char(&mut self, c: u8) -> ParseResult<()> {
         let x = self.next() ?;
         match x {
@@ -397,26 +406,29 @@ impl <R: Read> JsonParser<R> {
     }
 
 
-    pub fn match_keyword(&mut self) -> ParseResult<()> {
+    pub fn match_keyword(&mut self, b: u8) -> ParseResult<()> {
 
-        self.skip_whitespace() ?;
+        // we've already skipped white sapce
+        // self.skip_whitespace() ?;
 
-        if let Some(b) = self.peek()? {
 
-            if b == 't' as u8 { 
-                //true
-                byte_seq!(self, 't', 'r', 'u', 'e');
-                self.emit_token(JsonEvent2::Boolean(true));
-            } else if b == 'f' as u8 { 
-                //false
-                byte_seq!(self, 'f', 'a', 'l', 's', 'e');
-                self.emit_token(JsonEvent2::Boolean(false));
-            } else if b == 'n' as u8 { 
-                //null
-                byte_seq!(self, 'n', 'u', 'l', 'l');
-                self.emit_token(JsonEvent2::Null);
-            } 
-        }
+        // we could do with a check here that is very quick ...
+        // .. and then this "slow" version here, so we can poss make use of 
+        // . .e.g vectorizing or using out internal buffer more intelligently
+
+        if b == 't' as u8 { 
+            //true
+            byte_seq!(self, 't', 'r', 'u', 'e');
+            self.emit_token(JsonEvent2::Boolean(true));
+        } else if b == 'f' as u8 { 
+            //false
+            byte_seq!(self, 'f', 'a', 'l', 's', 'e');
+            self.emit_token(JsonEvent2::Boolean(false));
+        } else if b == 'n' as u8 { 
+            //null
+            byte_seq!(self, 'n', 'u', 'l', 'l');
+            self.emit_token(JsonEvent2::Null);
+        } 
 
         Ok(())
     }
@@ -434,8 +446,8 @@ impl <R: Read> JsonParser<R> {
             Some( U8_START_OBJ ) => self.match_object(),
             Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => self.match_number(),
 
-            // true,false,null
-            Some( _ ) => self.match_keyword() ,
+            // true,false,null -- we can put thisin here 't', 'f', 'n' etc
+            Some( b ) => self.match_keyword( b ) ,
             _ => Err(ParseErr::DidNotMatch),
 
         }
