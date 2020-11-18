@@ -119,6 +119,14 @@ impl <R: Read> JsonParser<R> {
     }
 
 
+    fn replace_buffer(&mut self) -> ParseResult<()> {
+        // re-fill the buffer
+        self.buf_pos = 0;
+        match self.read.read(&mut *self.buffer) {
+            Ok(n) => { self.buf_cap = n; Ok(())} ,
+            Err(io) =>  Err(ParseErr::Io(io)),
+        }
+    }
 
     /// We can keep this up by using peek pos to simulate a peek?  Rather than 
     /// 
@@ -128,7 +136,7 @@ impl <R: Read> JsonParser<R> {
             return Ok(self.peeked.take());
         } 
 
-        // Checkif that < buffer.len() means we skip extra bounds check
+        // Check if that < buffer.len() means we skip extra bounds check
         if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
             let r = self.buffer[self.buf_pos];
             self.buf_pos += 1;
@@ -159,6 +167,7 @@ impl <R: Read> JsonParser<R> {
 
 
     /// Moves on until next char is whitespace
+    #[inline]
     fn skip_whitespace(&mut self) ->ParseResult<()> {
         
         loop {
@@ -181,8 +190,7 @@ impl <R: Read> JsonParser<R> {
         self.skip_whitespace() ? ;
         self.match_char(':' as u8) ?;
         self.skip_whitespace() ? ;
-        self.match_value() ?;
-        Ok(())
+        self.match_value()
     }
 
 
@@ -311,24 +319,29 @@ impl <R: Read> JsonParser<R> {
         //let mut s = String::new();
         self.string_buff.clear();
         let mut escaped = false;
-        loop {
-            let x = self.next() ?;
-            if x.is_some() {
+        if self.peeked.is_some() {
+            self.peeked.take();
+            self.buf_pos -= 1;
 
-                // DANGER .. unwrap
-                // NB: see how unwrap is std::io::Result, so I should be able to "?" operator it
-                let mut c = x.unwrap();
-                
+        }
+
+        loop {
+
+            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+                let mut c = self.buffer[self.buf_pos];
+                self.buf_pos += 1;
+
                 if c == U8_ESCAPE {
                     escaped = true;
                     continue;
                 } 
 
                 // not if in "escape mode"                
-                if c == '\n' as u8|| c == '\r' as u8 {
+                if c == '\n' as u8 || c == '\r' as u8 {
                     return Err(ParseErr::BadData(String::from("\r or \n not allowed in string")));
                 }
 
+                // asssume input is valid utf8, so its just a char
                 if c > 127 { 
                     continue;
                 }
@@ -342,26 +355,24 @@ impl <R: Read> JsonParser<R> {
                     } else if c == 'r' as u8 {
                         c = '\r' as u8;
                     }
+                    // TODO : \n and \u812376 \nd \t
                     // need to escape it
                 } else if c == U8_QUOTE {
                     // end of string !
                     // TODO: zero-copy of string please!
                     // let the_str = self.string_buff.as_str();
                     self.emit_token(JsonEvent2::String( /* the_str */ ));
+                    &self.string_buff;
                     return Ok(());
                 } 
-
-
 
                 // TODO: try not to cast to char?
                 // just append to result
                 self.string_buff.push(c as char);
 
-            } else {
-                // Unterminated string constant
-                return Err(ParseErr::BadData(String::from("unterminated string")));
+            }  else {
+                self.replace_buffer() ?;
             }
-
         }
     }
 
@@ -505,7 +516,7 @@ mod tests {
 
     #[test]
     pub fn check_single_multi_value_object() -> ParseResult<()> {
-
+        //
         let mut p = test_parser(r##"{"$schema": "http://donnees-data.tpsgc-pwgsc.gc.ca/br1/delaipaiement-promptpayment/delaipaiement-promptpayment_schema.json",
  
                  "xx": [
@@ -563,6 +574,21 @@ mod tests {
         Ok(())
     }
 
+
+
+    #[test]
+    pub fn check_string() -> ParseResult<()> {
+        let mut p = test_parser(r##""simple string""##);
+        p.match_string() ?;
+
+        p = test_parser(r#""""#);
+        p.match_string() ?;
+
+        p = test_parser(r#""with\rin 0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789""#);
+        p.match_string() ?;
+
+        Ok(())
+    }
 
 
 }
