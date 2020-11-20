@@ -109,11 +109,7 @@ impl <R: Read> JsonParser<R> {
     /// "Peek" the next byte - used if we want to check if the next token
     /// is equal to something, and only consume it if is.  (Say we want ot check for  keyword etc})
     fn peek(&mut self) -> ParseResult<Option<u8>> {
-
-        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
-            return Ok(Some(self.buffer[self.buf_pos]))
-        } 
-        self.replace_buffer()?;
+        self.ensure_buffer()?;
         if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
             Ok(Some(self.buffer[self.buf_pos]))
         } else {
@@ -121,9 +117,23 @@ impl <R: Read> JsonParser<R> {
         }
     }
 
+    #[inline]
+    fn ensure_buffer(&mut self) -> ParseResult<()> {
+        if self.buf_pos >= self.buf_cap {
+            self.replace_buffer()? ;
+        }
+        Ok(())
+    }
+
     /// If current position matches the char, eat it and return true
-    fn eat_if(&mut self, b: u8) -> bool {
-        true
+    fn consume_if(&mut self, b: u8) -> ParseResult<bool> {
+        self.ensure_buffer()?;
+        if self.buf_pos < self.buffer.len() && b == self.buffer[self.buf_pos] {
+            self.buf_pos += 1;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
 
@@ -214,8 +224,7 @@ impl <R: Read> JsonParser<R> {
         self.match_member() ? ;
         self.skip_whitespace() ?;
 
-        while let Some( U8_COMMA ) = self.peek()? {
-            self.next() ?;
+        while self.consume_if(U8_COMMA)? {
             self.match_member() ? ;
             self.skip_whitespace() ?;
         }
@@ -232,8 +241,7 @@ impl <R: Read> JsonParser<R> {
         self.skip_whitespace() ?;
 
         // ! quick exit for empty array
-        if let Some( U8_END_OBJ ) = self.peek()? {
-            self.next() ?;
+        if self.consume_if( U8_END_OBJ )? {
             self.emit_token(JsonEvent2::ObjectEnd);
             return Ok(());
         }
@@ -304,10 +312,9 @@ impl <R: Read> JsonParser<R> {
 
         count = 0;
         //self.peeked.take(); // hack again
-        if let Some( U8_PERIOD ) = self.peek()? {
+        if self.consume_if( U8_PERIOD )? {
             // same again ..
             self.string_buff.push('.');
-            self.buf_pos += 1;
             while self.buf_cap > 0 {
         
                 if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
@@ -453,8 +460,7 @@ impl <R: Read> JsonParser<R> {
 
         self.skip_whitespace() ?;
         // ! quick exit for empty array
-        if let Some( U8_END_ARR ) = self.peek()? {
-            self.next() ?;
+        if self.consume_if( U8_END_ARR )? {
             self.emit_token(JsonEvent2::ArrayEnd);
             return Ok(());
         }
@@ -474,8 +480,7 @@ impl <R: Read> JsonParser<R> {
         self.match_value() ? ;
         self.skip_whitespace() ?;
 
-        while let Some( U8_COMMA ) = self.peek()? {
-            self.next() ?;
+        while self.consume_if(U8_COMMA)? {
             self.match_value() ? ;
             self.skip_whitespace() ?;
         }
