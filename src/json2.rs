@@ -70,9 +70,6 @@ pub struct JsonParser<R: Read> {
     buf_pos: usize,
     buf_cap: usize,
 
-    /// Peeked byte
-    peeked: Option<u8>,
-
     counts: (u32, u32),
 
     string_buff: String
@@ -85,7 +82,6 @@ impl <R: Read> JsonParser<R> {
     pub fn new(r: R) -> JsonParser<R> {
         JsonParser {
             read: r,
-            peeked: None,
             counts: (0, 0),
             buffer : Box::new([0u8; 8 * 1024]),
             buf_pos: 0,
@@ -149,10 +145,6 @@ impl <R: Read> JsonParser<R> {
     /// We can keep this up by using peek pos to simulate a peek?  Rather than 
     /// 
     fn next(&mut self) -> ParseResult<Option<u8>> {
-
-        if self.peeked.is_some() {
-            return Ok(self.peeked.take());
-        } 
 
         // Check if that < buffer.len() means we skip extra bounds check
         if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
@@ -384,11 +376,6 @@ impl <R: Read> JsonParser<R> {
         //let mut s = String::new();
         self.string_buff.clear();
         let mut escaped = false;
-        if self.peeked.is_some() {
-            self.peeked.take();
-            self.buf_pos -= 1;
-
-        }
 
         // trying to significantly beat 4.2 seconds
         // String "push" -- does not appear to be issue
