@@ -33,6 +33,7 @@ macro_rules! byte_seq {
     );
 }
 
+
 /// What does life time mean?
 #[derive(Debug)]
 pub enum JsonEvent2 {
@@ -257,90 +258,63 @@ impl <R: Read> JsonParser<R> {
     }
 
     
+    /// Called only from match number
+    fn match_digits(&mut self) -> ParseResult<u16> {
+        let mut count = 0usize;
+        while self.buf_cap > 0 {
+            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
+                
+                let mut x = 0usize;
+                unsafe  {
+                    self.string_buff.as_mut_vec().extend(
+                        self.buffer[self.buf_pos..self.buffer.len()]
+                            .iter()
+                            .take_while( |n| **n >= '0' as u8  && **n <= '9' as u8)
+                            .inspect( |_n| x+=1 )
+                        );
+                }
+                
+                count += x;
+                
+                self.buf_pos += x;
+                    
+                // TODO: check boundary here?
+                if x == 0 || self.buf_pos < self.buf_cap {
+                    break;
+                }
+
+            }  else {
+                self.replace_buffer()?;
+            }
+        } 
+        // println!("{} {}", count,  self.string_buff);
+        Ok(count as u16)
+    }
+
+
     fn match_number(&mut self) -> ParseResult<()> {
         
         // prob not necessary - we scan number only if matches
         // self.skip_whitespace() ?;
 
-        // leading char already checked
-        //self.string_buff.push(leading as char);
-        
-        // can we capture using the 
-        // let match_digit = |c| {
-        //     c >= '0' as u8 && c <= '9' u8
-        // };
         // very first could be a minus!
-        if self.buf_pos < self.buffer.len() && self.buffer[self.buf_pos] == '-' as u8 {
+        //if self.buf_pos < self.buffer.len() && self.buffer[self.buf_pos] == '-' as u8 {
+        self.string_buff.clear();
+        if self.consume_if( U8_MINUS )? {
             self.string_buff.push('-');
-            self.buf_pos += 1;
-        }
-
-
-        let mut count = 0u16 ;
-
-        while self.buf_cap > 0 {
-        
-            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
-                    
-                let  n = self.buffer[self.buf_pos] ;
-
-                if n >= '0' as u8  && n <= '9' as u8 {
-                    self.buf_pos += 1 ;
-                    self.string_buff.push(n as char);
-                    count +=1;
-                } else {
-                    break;
-                }
-            }  else {
-                self.replace_buffer()?;
-            }
         }
 
         // if no numbers, its a cockup
-        if count == 0 {
-            &self.string_buff;
+        if self.match_digits()? == 0 {
             return Err(ParseErr::DidNotMatch);
         }
 
-        count = 0;
         //self.peeked.take(); // hack again
         if self.consume_if( U8_PERIOD )? {
-            // same again ..
             self.string_buff.push('.');
-            while self.buf_cap > 0 {
-        
-                if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
-                        
-                    let  n = self.buffer[self.buf_pos] ;
-    
-                    if n >= '0' as u8  && n <= '9' as u8 {
-                        self.buf_pos += 1 ;
-                        self.string_buff.push(n as char);
-                        count +=1;
-                    } else {
-                        break;
-                    }
-                }  else {
-                    self.replace_buffer()?;
-                }
-            }
-        }
 
-        while self.buf_cap > 0 {
-        
-            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
-                    
-                let  n = self.buffer[self.buf_pos] ;
-
-                if n >= '0' as u8  && n <= '9' as u8 {
-                    self.buf_pos += 1 ;
-                    self.string_buff.push(n as char);
-                    count +=1;
-                } else {
-                    break;
-                }
-            }  else {
-                self.replace_buffer()?;
+            if self.match_digits()? == 0 {
+                return Err(ParseErr::DidNotMatch);
             }
         }
 
