@@ -15,24 +15,17 @@ const U8_0:u8 = '0' as u8;
 const U8_9:u8 = '9' as u8;
 const U8_PERIOD:u8 = '.' as u8;
 
-
+/// Checks a sequence of bytes match - useful for constants
 macro_rules! byte_seq {
     // first arg is parser/rewinder, then the args
     ($s:expr, $( $x:expr ),* ) => (
         { 
             $(
-                if let Some(z) = $s.next()? {
-                    if z != $x as u8 {
-                        return Err(ParseErr::DidNotMatch);
-                    }
-                } else {
-                    return Err(ParseErr::DidNotMatch);
-                }
+                    $s.match_char($x as u8)?;
             )* 
         }
     );
 }
-
 
 /// What does life time mean?
 #[derive(Debug)]
@@ -143,39 +136,6 @@ impl <R: Read> JsonParser<R> {
         }
     }
 
-    /// We can keep this up by using peek pos to simulate a peek?  Rather than 
-    /// 
-    fn next(&mut self) -> ParseResult<Option<u8>> {
-
-        // Check if that < buffer.len() means we skip extra bounds check
-        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
-            let r = self.buffer[self.buf_pos];
-            self.buf_pos += 1;
-            return Ok(Some(r));
-        }
-
-        self.buf_pos = 0;
-
-        // re-fill the buffer
-        match self.read.read(&mut *self.buffer) {
-            Ok(n) => self.buf_cap = n,
-            Err(io) => return Err(ParseErr::Io(io)),
-        }
-
-        // this is same block as above .. so we could simplify somehow
-        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
-            let r = self.buffer[self.buf_pos];
-            self.buf_pos +=1;
-            Ok(Some(r))
-        } else {
-            Ok(None)
-        }
-
-    }
-
-
-
-
 
     /// Moves on until next char is whitespace
     #[inline]
@@ -250,11 +210,17 @@ impl <R: Read> JsonParser<R> {
     /// Don't inline it -- check it makes go any faster!
     #[inline]
     fn match_char(&mut self, c: u8) -> ParseResult<()> {
-        let x = self.next() ?;
-        match x {
-            Some (n) if n == c => Ok(()),
-            _  => Err(ParseErr::DidNotMatch) ,
+
+        // No, what if we need to get the next char?
+        //self.buf_pos += 1;
+        self.ensure_buffer()?;
+        if self.buf_pos < self.buffer.len() {
+            if self.buffer[self.buf_pos]  == c {
+                self.buf_pos += 1;
+                return Ok(());
+            }
         }
+        Err(ParseErr::DidNotMatch)
     }
 
     
@@ -273,9 +239,7 @@ impl <R: Read> JsonParser<R> {
                             .inspect( |_n| x+=1 )
                         );
                 }
-                
                 count += x;
-                
                 self.buf_pos += x;
                     
                 // TODO: check boundary here?
@@ -396,7 +360,6 @@ impl <R: Read> JsonParser<R> {
                     // TODO: zero-copy of string please!
                     // let the_str = self.string_buff.as_str();
                     self.emit_token(JsonEvent2::String( /* the_str */ ));
-                    &self.string_buff;
                     return Ok(());
                 } 
 
