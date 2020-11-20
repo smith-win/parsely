@@ -109,13 +109,21 @@ impl <R: Read> JsonParser<R> {
     /// "Peek" the next byte - used if we want to check if the next token
     /// is equal to something, and only consume it if is.  (Say we want ot check for  keyword etc})
     fn peek(&mut self) -> ParseResult<Option<u8>> {
-        if self.peeked.is_some() {
-            return Ok(self.peeked);
-        } else  if let Some(n) = self.next()? {
-            self.peeked = Some(n)
-        };
 
-        Ok(self.peeked)
+        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+            return Ok(Some(self.buffer[self.buf_pos]))
+        } 
+        self.replace_buffer()?;
+        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+            Ok(Some(self.buffer[self.buf_pos]))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// If current position matches the char, eat it and return true
+    fn eat_if(&mut self, b: u8) -> bool {
+        true
     }
 
 
@@ -169,16 +177,22 @@ impl <R: Read> JsonParser<R> {
     /// Moves on until next char is whitespace
     #[inline]
     fn skip_whitespace(&mut self) ->ParseResult<()> {
-        
+
         loop {
-            let x = self.peek() ?;
-            
-            // TODO: swallow line/col nos in "next" to keep parse position
-            match x {
-                Some( x ) if (x == 32 || x==9 || x == 8 || x == 10 || x == 13) => self.next() ?,
-                _ => return Ok(()) ,
-            };
+
+            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+                let x = self.buffer[self.buf_pos] ;
+
+                if x == 32 || x==9 || x == 8 || x == 10 || x == 13 {
+                    self.buf_pos += 1 ;
+                } else {
+                    return Ok(());
+                }
+            } else {
+                self.replace_buffer()?;
+            }
         }
+
     }
 
     
@@ -244,54 +258,98 @@ impl <R: Read> JsonParser<R> {
 
     
     fn match_number(&mut self) -> ParseResult<()> {
+        
+        // prob not necessary - we scan number only if matches
+        // self.skip_whitespace() ?;
 
-        self.skip_whitespace() ?;
-
-        // optional sign -- could have been "match while"
-        if let Some( U8_MINUS ) = self.peek()? {
-            self.string_buff.push('-');
-            self.next() ?;
-        }
-
+        // leading char already checked
+        //self.string_buff.push(leading as char);
+        
         // can we capture using the 
         // let match_digit = |c| {
         //     c >= '0' as u8 && c <= '9' u8
         // };
+        // very first could be a minus!
+        if self.buf_pos < self.buffer.len() && self.buffer[self.buf_pos] == '-' as u8 {
+            self.string_buff.push('-');
+            self.buf_pos += 1;
+        }
+
 
         let mut count = 0u16 ;
-        while let Some (n) = self.peek()? {
-            if n >= '0' as u8  && n <= '9' as u8 {
-                self.next()? ;
-                self.string_buff.push(n as char);
-                count +=1;
-            } else {
-                break;
-            }
-        }
 
-        // if no numbers, its a cockup
-        if count == 0 {
-            return Err(ParseErr::DidNotMatch);
-        }
+        while self.buf_cap > 0 {
+        
+            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
+                    
+                let  n = self.buffer[self.buf_pos] ;
 
-        count = 0;
-        if let Some( U8_PERIOD ) = self.peek()? {
-            // same again ..
-            self.string_buff.push('.');
-            self.next() ?;
-            while let Some (n) = self.peek()? {
                 if n >= '0' as u8  && n <= '9' as u8 {
-                    self.next()? ;
+                    self.buf_pos += 1 ;
                     self.string_buff.push(n as char);
                     count +=1;
                 } else {
                     break;
                 }
+            }  else {
+                self.replace_buffer()?;
             }
         }
 
-        //let tmp_str = self.string_buff.as_str();
+        // if no numbers, its a cockup
+        if count == 0 {
+            &self.string_buff;
+            return Err(ParseErr::DidNotMatch);
+        }
+
+        count = 0;
+        //self.peeked.take(); // hack again
+        if let Some( U8_PERIOD ) = self.peek()? {
+            // same again ..
+            self.string_buff.push('.');
+            self.buf_pos += 1;
+            while self.buf_cap > 0 {
+        
+                if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
+                        
+                    let  n = self.buffer[self.buf_pos] ;
+    
+                    if n >= '0' as u8  && n <= '9' as u8 {
+                        self.buf_pos += 1 ;
+                        self.string_buff.push(n as char);
+                        count +=1;
+                    } else {
+                        break;
+                    }
+                }  else {
+                    self.replace_buffer()?;
+                }
+            }
+        }
+
+        while self.buf_cap > 0 {
+        
+            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
+                    
+                let  n = self.buffer[self.buf_pos] ;
+
+                if n >= '0' as u8  && n <= '9' as u8 {
+                    self.buf_pos += 1 ;
+                    self.string_buff.push(n as char);
+                    count +=1;
+                } else {
+                    break;
+                }
+            }  else {
+                self.replace_buffer()?;
+            }
+        }
+
+
         self.emit_token(JsonEvent2::Number());
+        self.string_buff.clear();
+
+        // self.peeked.take();
         Ok(())
         // digits 
 
@@ -325,9 +383,18 @@ impl <R: Read> JsonParser<R> {
 
         }
 
+        // trying to significantly beat 4.2 seconds
+        // String "push" -- does not appear to be issue
+        // let mut range_start = self.buf_pos;
+        // let fast_check = [0u8, 0u8, 0u8, 0u8];
+
+        // quote         34 - 
+        // back slash = 134 = 
+
         loop {
 
             if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+                
                 let mut c = self.buffer[self.buf_pos];
                 self.buf_pos += 1;
 
@@ -345,7 +412,6 @@ impl <R: Read> JsonParser<R> {
                 if c > 127 { 
                     continue;
                 }
-
 
                 if escaped {
                     // Doesn't deal with hex \u00ff77
@@ -368,7 +434,7 @@ impl <R: Read> JsonParser<R> {
 
                 // TODO: try not to cast to char?
                 // just append to result
-                self.string_buff.push(c as char);
+                //
 
             }  else {
                 self.replace_buffer() ?;
@@ -450,11 +516,10 @@ impl <R: Read> JsonParser<R> {
     pub fn match_value(&mut self) -> ParseResult<()> {
 
         self.skip_whitespace() ?;
-
         // Peek the char
         match self.peek()? {
             Some( U8_QUOTE ) => self.match_string(),
-            Some( U8_START_ARR )=> self.match_array(),
+            Some( U8_START_ARR ) => self.match_array(),
             Some( U8_START_OBJ ) => self.match_object(),
             Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => self.match_number(),
 
@@ -524,6 +589,7 @@ mod tests {
                         "procurement-id_id-approvisionnement":"EJ19670258",
                         "Project-number_Numéro-de-projet":"R.041736.894",
                         "Vendor-name_Nom-du-fournisseur":"AUTOMATED LOGIC - CANADA, LTD."
+                    }, {  
                     }
                     ]
             } "##);
