@@ -98,6 +98,7 @@ impl <R: Read> JsonParser<R> {
 
     /// "Peek" the next byte - used if we want to check if the next token
     /// is equal to something, and only consume it if is.  (Say we want ot check for  keyword etc})
+    #[inline]
     fn peek(&mut self) -> ParseResult<Option<u8>> {
         self.ensure_buffer()?;
         if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
@@ -228,7 +229,7 @@ impl <R: Read> JsonParser<R> {
     fn match_digits(&mut self) -> ParseResult<u16> {
         let mut count = 0usize;
         while self.buf_cap > 0 {
-            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len()  {
+            if self.buf_pos < self.buf_cap && self.buf_pos < self.buf_cap /*self.buffer.len() */ {
                 
                 let mut x = 0usize;
                 unsafe  {
@@ -236,7 +237,7 @@ impl <R: Read> JsonParser<R> {
                         self.buffer[self.buf_pos..self.buffer.len()]
                             .iter()
                             .take_while( |n| **n >= '0' as u8  && **n <= '9' as u8)
-                            .inspect( |_n| x+=1 )
+                            .inspect( |_n| x += 1 )
                         );
                 }
                 count += x;
@@ -479,6 +480,7 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+
     /// Create parser used during tests
     fn test_parser(s: &str) -> JsonParser<Cursor<&str>> {
         JsonParser::new(
@@ -554,7 +556,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     pub fn check_keyword() -> ParseResult<()> {
         let mut p = test_parser(r##" true "##);
@@ -568,8 +569,6 @@ mod tests {
 
         Ok(())
     }
-
-
 
     #[test]
     pub fn check_string() -> ParseResult<()> {
