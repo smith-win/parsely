@@ -175,3 +175,39 @@ fn main() {
     }
 
 }
+
+
+
+21Mar2021
+
+I want to make this run in an iterator manner, rather than 
+using the function calls.  An iterator also allows us more control 
+when consuming the data.   How to change the function based approch to iterator.
+
+
+"next()" -- needs to know what to expect.
+We also need to keep a stack of our position
+
+These are the events we make
+
+    "SIMPLE" values
+    String          --> push nothing on stack
+    Number          --> push nothing on stack
+    Boolean(bool)   --> push nothing on stack
+    Null            --> push nothing on stack
+
+    "STRUCTURAL" values
+
+    ObjectStart,    --> push "object" on stack
+    ObjectEnd,      --> pop "object" stack stack ** VALIDATE OBJECT START ON STACK
+
+    ArrayStart      --> push array on stack
+    ArrayEnd        --> pop array from stack  ** VALIDATE ARRAY START ON STACK !
+
+31Mar2021
+First iterative version working in rough, with basic errors when reach EOF, or invalid data (e..g  array not closed etc)
+
+
+
+
+

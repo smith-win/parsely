@@ -1,6 +1,7 @@
 //! Json parser, using only an iterator over bytes
 
 use std::io::Read;
+use std::vec::Vec;
 use crate::internals::{ParseResult, ParseErr};
 
 const U8_START_OBJ:u8 = '{' as u8;
@@ -50,6 +51,14 @@ pub enum JsonEvent2 {
     ArrayEnd,
 }
 
+/// Private enum that keeps track of parse position
+#[derive(Debug)]
+enum JsonStackItem {
+    /// Where vaue is number of elements in array discovered during the parse
+    Array(usize),
+    /// WHere value is number of named members in the JSON object discovered so far
+    Object(usize)
+}
 
 pub struct JsonParser<R: Read> {
 
@@ -66,7 +75,12 @@ pub struct JsonParser<R: Read> {
 
     counts: (u32, u32),
 
-    string_buff: String
+    /// A buffer for collecting the current value being parsed
+    string_buff: String,
+
+    /// For iterative parsing, we keep items on the 
+    /// stack 
+    stack: Vec<JsonStackItem>
 
 }
 
@@ -81,6 +95,7 @@ impl <R: Read> JsonParser<R> {
             buf_pos: 0,
             buf_cap: 0,
             string_buff : String::with_capacity(300), // guess at effective initial size
+            stack: Vec::with_capacity(10), // 10 deep reasonable default
         }
     }
 
@@ -105,6 +120,14 @@ impl <R: Read> JsonParser<R> {
             Ok(Some(self.buffer[self.buf_pos]))
         } else {
             Ok(None)
+        }
+    }
+
+    /// Like peek, but when you require a value to be present
+    fn peek_expected(&mut self) -> ParseResult<u8> {
+        match self.peek()? {
+            Some(b) => Ok(b),
+            None => Err(ParseErr::DidNotMatch),
         }
     }
 
@@ -154,59 +177,14 @@ impl <R: Read> JsonParser<R> {
                 }
             } else {
                 self.replace_buffer()?;
+                // check for EOF
+                if self.buf_cap == 0 {
+                    return Ok(());
+                }
             }
         }
 
     }
-
-    
-
-    // Matches a member
-    fn match_member(&mut self) -> ParseResult<()> {
-        self.skip_whitespace() ? ;
-        self.match_string() ? ;
-        self.skip_whitespace() ? ;
-        self.match_char(':' as u8) ?;
-        self.skip_whitespace() ? ;
-        self.match_value()
-    }
-
-
-    fn match_member_list(&mut self) -> ParseResult<()> {
-
-        // first member
-        self.match_member() ? ;
-        self.skip_whitespace() ?;
-
-        while self.consume_if(U8_COMMA)? {
-            self.match_member() ? ;
-            self.skip_whitespace() ?;
-        }
-        Ok(())
-    }
-
-
-    fn match_object(&mut self) -> ParseResult<()> {
-        self.match_char( U8_START_OBJ ) ?;
-        self.emit_token(JsonEvent2::ObjectStart);
-
-
-        // need a member list
-        self.skip_whitespace() ?;
-
-        // ! quick exit for empty array
-        if self.consume_if( U8_END_OBJ )? {
-            self.emit_token(JsonEvent2::ObjectEnd);
-            return Ok(());
-        }
-        
-        self.match_member_list()? ;
-        self.skip_whitespace() ?;
-        self.match_char( U8_END_OBJ ) ?;
-        self.emit_token(JsonEvent2::ObjectEnd);
-        Ok(())
-    }
-
 
     /// Don't inline it -- check it makes go any faster!
     #[inline]
@@ -257,7 +235,7 @@ impl <R: Read> JsonParser<R> {
     }
 
 
-    fn match_number(&mut self) -> ParseResult<()> {
+    fn match_number(&mut self) -> ParseResult<JsonEvent2> {
         
         // prob not necessary - we scan number only if matches
         // self.skip_whitespace() ?;
@@ -288,7 +266,7 @@ impl <R: Read> JsonParser<R> {
         self.string_buff.clear();
 
         // self.peeked.take();
-        Ok(())
+        Ok(JsonEvent2::Number())
         // digits 
 
         // . digit +
@@ -366,7 +344,7 @@ impl <R: Read> JsonParser<R> {
 
                 // TODO: try not to cast to char?
                 // just append to result
-                //
+                self.string_buff.push( c as char);
 
             }  else {
                 self.replace_buffer() ?;
@@ -374,47 +352,7 @@ impl <R: Read> JsonParser<R> {
         }
     }
 
-    fn match_array(&mut self) -> ParseResult<()> {
-        self.skip_whitespace() ?;
-        
-        // special case .. zero length
-        self.match_char(U8_START_ARR) ?;
-        self.emit_token(JsonEvent2::ArrayStart);
-
-        // TODO: middle bit, which is a "value list"
-
-        self.skip_whitespace() ?;
-        // ! quick exit for empty array
-        if self.consume_if( U8_END_ARR )? {
-            self.emit_token(JsonEvent2::ArrayEnd);
-            return Ok(());
-        }
-
-        self.match_value_list()? ;
-        self.skip_whitespace() ?;
-
-        self.match_char(U8_END_ARR) ?;
-        self.emit_token(JsonEvent2::ArrayEnd);
-        Ok(())
-
-    }
-
-
-    fn match_value_list(&mut self) -> ParseResult<()> {
-        // first member
-        self.match_value() ? ;
-        self.skip_whitespace() ?;
-
-        while self.consume_if(U8_COMMA)? {
-            self.match_value() ? ;
-            self.skip_whitespace() ?;
-        }
-
-        Ok(())
-    }
-
-
-    pub fn match_keyword(&mut self, b: u8) -> ParseResult<()> {
+    pub fn match_keyword(&mut self, b: u8) -> ParseResult<JsonEvent2> {
 
         // we've already skipped white sapce
         // self.skip_whitespace() ?;
@@ -427,50 +365,128 @@ impl <R: Read> JsonParser<R> {
         if b == 't' as u8 { 
             //true
             byte_seq!(self, 't', 'r', 'u', 'e');
-            self.emit_token(JsonEvent2::Boolean(true));
+            return Ok(JsonEvent2::Boolean(true));
         } else if b == 'f' as u8 { 
             //false
             byte_seq!(self, 'f', 'a', 'l', 's', 'e');
-            self.emit_token(JsonEvent2::Boolean(false));
+            return Ok(JsonEvent2::Boolean(false));
         } else if b == 'n' as u8 { 
             //null
             byte_seq!(self, 'n', 'u', 'l', 'l');
-            self.emit_token(JsonEvent2::Null);
+            return Ok(JsonEvent2::Null);
         } 
 
-        Ok(())
+        Err(ParseErr::DidNotMatch)
     }
 
-
-    /// 
-    pub fn match_value(&mut self) -> ParseResult<()> {
-
+    fn it_match_value(&mut self) -> ParseResult<JsonEvent2> {
         self.skip_whitespace() ?;
         // Peek the char
         match self.peek()? {
-            Some( U8_QUOTE ) => self.match_string(),
-            Some( U8_START_ARR ) => self.match_array(),
-            Some( U8_START_OBJ ) => self.match_object(),
+            Some( U8_QUOTE ) => { self.match_string()?; Ok(JsonEvent2::String()) }
+            Some( U8_START_ARR ) => {self.stack.push(JsonStackItem::Array(0)); self.buf_pos += 1; Ok(JsonEvent2::ArrayStart)}
+            Some( U8_START_OBJ ) => {self.stack.push(JsonStackItem::Object(0)); self.buf_pos += 1; Ok(JsonEvent2::ObjectStart)}
             Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => self.match_number(),
-
-            // true,false,null -- we can put thisin here 't', 'f', 'n' etc
             Some( b ) => self.match_keyword( b ) ,
             _ => Err(ParseErr::DidNotMatch),
+        }        
+    }
 
+    /// Match an array
+    fn it_match_obj_array(&mut self, n: usize) -> ParseResult<JsonEvent2> {
+        // we can take end of object immediatley
+        self.skip_whitespace()?;
+        if self.consume_if(b']')? {
+            // pop from stack, ensure char is consumed
+            self.stack.pop();
+            return Ok(JsonEvent2::ArrayEnd);
         }
 
+        // if not object end, check if we need comma or not
+        if n != 0 {
+            self.match_char(b',')?;
+            self.skip_whitespace()?;
+        }
+        // TODO: increment the object member counter!!
+        if let Some(JsonStackItem::Array(n)) = self.stack.last_mut() {
+            *n += 1
+        }
+
+        // value name
+        self.it_match_value()
+
+    }
+
+    fn it_match_obj_member(&mut self, n: usize) -> ParseResult<JsonEvent2> {
+        // we can take end of object immediatley
+        self.skip_whitespace()?;
+        if self.consume_if(b'}')? {
+            // pop from stack, ensure char is consumed
+            self.stack.pop();
+            return Ok(JsonEvent2::ObjectEnd);
+        }
+
+        // if not object end, check if we need comma or not
+        if n != 0 {
+            self.match_char(b',')?;
+            self.skip_whitespace()?;
+        }
+        // TODO: increment the object member counter!!
+        if let Some(JsonStackItem::Object(n)) = self.stack.last_mut() {
+            *n += 1
+        }
+
+        // value name
+        self.match_string() ? ;  
+        self.skip_whitespace() ? ;
+        self.match_char(':' as u8) ?;
+        self.skip_whitespace() ? ;
+        self.it_match_value()
+
     }
 
 
-    /// Plus register a call back
-    pub fn parse(&mut self) -> ParseResult<()> {
 
-        self.match_value()?;
-        println!("#objects: {}, #values {}", self.counts.1, self.counts.0);
-        Ok(())
-    }
+    // This is a typical coding issue
+    //  1) if let Some() .. borrows "e" from self.stack
+    //  2) call 
+    //
+    //
+    /// Attemt for parsing iteratively
+    /// Ok(None) - end of parsing
+    /// ```
+    /// pub fn next_token(&mut self) -> ParseResult<Option<&JsonEvent2>> {
+    ///     // if stack is empty, any valie JSON Value item can be next
+    ///     println!("Stack len = {}", self.stack.len());
+    ///     if let Some(e) =  self.stack.last() {
+    ///         self.expect_from_stack(e)
+    ///     } else {
+    ///         Ok(Some( self.it_match_member()? ))
+    ///     }
+    /// } 
+    /// ```
+    pub fn next_token(&mut self) -> ParseResult<Option<JsonEvent2>> {
+        // if stack is empty, any valie JSON Value item can be next
+        // println!("Stack len = {:?}", self.stack);
 
+        self.skip_whitespace() ?;
 
+        // bit hacky .. check for EOF
+        if self.buf_cap == 0 {
+            return match self.stack.is_empty() {
+                true => Ok(None),
+                false => Err(ParseErr::DidNotMatch),
+            }
+        }
+
+        //let _b = self.peek()?;
+        match self.stack.last_mut() {
+            Some(JsonStackItem::Object(n)) => {let copy = *n; Ok(Some(self.it_match_obj_member(copy)?)) },
+            Some(JsonStackItem::Array(n)) => {let copy = *n; Ok(Some(self.it_match_obj_array(copy)?)) },
+            None => Ok(Some(self.it_match_value()? )),
+        }
+
+    } 
 }
 
 
@@ -479,8 +495,7 @@ mod tests {
 
     use super::*;
     use std::io::Cursor;
-
-
+    
     /// Create parser used during tests
     fn test_parser(s: &str) -> JsonParser<Cursor<&str>> {
         JsonParser::new(
@@ -488,99 +503,37 @@ mod tests {
         )
     }
 
-
     #[test]
-    pub fn check_peek_and_next() -> ParseResult<()> {
-        let mut p = test_parser(r##"     "hello \"world\"""##);
-        p.match_value() ?;
+    fn test_it_parse_obj() -> ParseResult<()> {
+        let x = r##"{ 
+            "hello": "world", "fruit":"banana", "fruit":"banana", "fruit":"banana", "fruit":"banana"
+            , "second": {"Aardvark":"A"}
+            , "third": {
+                "Albatross":"A",
+                "fourth": { "x": "x"},
+                "a_number": 12.34 ,
+                "boolE": false
+            }
+        }"##;
+        println!("{}", x);
+        let mut p = test_parser(x);
+        let mut count = 0;
+        while let Some(e) = p.next_token()? {
+            println!(">> {:?}", e);
+            count += 1;
+            if count > 100 {
+                panic!("not supposed to loop forever!")
+            }
+        }
         Ok(())
     }
 
     #[test]
-    pub fn check_empty_object() -> ParseResult<()> {
-        let mut p = test_parser(r##" { } "##);
-        p.match_value() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_single_value_object() -> ParseResult<()> {
-        let mut p = test_parser(r##" { "apple":"banana"} "##);
-        p.match_value() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_single_multi_value_object() -> ParseResult<()> {
-        //
-        let mut p = test_parser(r##"{"$schema": "http://donnees-data.tpsgc-pwgsc.gc.ca/br1/delaipaiement-promptpayment/delaipaiement-promptpayment_schema.json",
- 
-                 "xx": [
-                    {
-                        "procurement-id_id-approvisionnement":"EJ19670258",
-                        "Project-number_Numéro-de-projet":"R.041736.894",
-                        "Vendor-name_Nom-du-fournisseur":"AUTOMATED LOGIC - CANADA, LTD."
-                    }, {  
-                    }
-                    ]
-            } "##);
-        p.match_value() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_empty_array() -> ParseResult<()> {
-        let mut p = test_parser(r##"[ ]"##);
-        p.match_value() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_array() -> ParseResult<()> {
-        let mut p = test_parser(r##"[ 
-            "aa", {}, "cc", 12, -34 ]"##);
-        p.match_value() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_number() -> ParseResult<()> {
-        let mut p = test_parser(r##" 12343"##);
-        p.match_value() ?;
-
-        let mut p = test_parser(r##" 12343.12"##);
-        p.match_value() ?;
-
-        let mut p = test_parser(r##" -12343.12"##);
-        p.match_value() ?;
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_keyword() -> ParseResult<()> {
-        let mut p = test_parser(r##" true "##);
-        p.match_value() ?;
-
-        let mut p = test_parser(r##" null "##);
-        p.match_value() ?;
-
-        let mut p = test_parser(r##" false "##);
-        p.match_value() ?;
-
-        Ok(())
-    }
-
-    #[test]
-    pub fn check_string() -> ParseResult<()> {
-        let mut p = test_parser(r##""simple string""##);
-        p.match_string() ?;
-
-        p = test_parser(r#""""#);
-        p.match_string() ?;
-
-        p = test_parser(r#""with\rin 0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789""#);
-        p.match_string() ?;
-
+    fn test_it_parse_arr() -> ParseResult<()> {
+        let mut p = test_parser(r##"[1, [1.1, "1.2", 1.3], 3, {"a":"nested"}, true, false, null]"##);
+        while let Some(e) = p.next_token()? {
+            println!(">> {:?}", e);
+        }
         Ok(())
     }
 
