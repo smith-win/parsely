@@ -142,29 +142,43 @@ means >= 128 && < 192
 
 
 
-[dependencies]
-parsely = { path = "../parsely" }
+Performance notes:
 
+1) How stupid am I???   Our internal buffer we never called "accept" to clear it.
+    - when do we clear ?
+    - json, we know what must be next
 
 
 extern crate parsely;
 
 
-use parsely::json::JsonParser;
-use std::io::{Read, BufReader};
 
-fn main() {
+21Mar2021
 
-    let args : Vec<String> = std::env::args().collect();
+I want to make this run in an iterator manner, rather than 
+using the function calls.  An iterator also allows us more control 
+when consuming the data.   How to change the function based approch to iterator.
 
-    let filename =  args.get(1).unwrap();
-    
-    for i in 1..5 {
-        println!("Parsing #{}", i);
-        let f = std::fs::File::open( filename ).unwrap();
-        let buf = BufReader::new(f);
-        let mut json = JsonParser::new(buf.bytes());
-        json.parse().unwrap();
-    }
 
-}
+"next()" -- needs to know what to expect.
+We also need to keep a stack of our position
+
+These are the events we make
+
+    "SIMPLE" values
+    String          --> push nothing on stack
+    Number          --> push nothing on stack
+    Boolean(bool)   --> push nothing on stack
+    Null            --> push nothing on stack
+
+    "STRUCTURAL" values
+
+    ObjectStart,    --> push "object" on stack
+    ObjectEnd,      --> pop "object" stack stack ** VALIDATE OBJECT START ON STACK
+
+    ArrayStart      --> push array on stack
+    ArrayEnd        --> pop array from stack  ** VALIDATE ARRAY START ON STACK !
+
+31Mar2021
+First iterative version working in rough, with basic errors when reach EOF, or invalid data (e..g  array not closed etc)
+

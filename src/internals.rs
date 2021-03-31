@@ -14,10 +14,10 @@ macro_rules! match_or {
             let mut pr: ParseResult<()> = Err(ParseErr::DidNotMatch);
             $(
                 if let Err(ParseErr::DidNotMatch) = pr {
-                    let mark_or = $r.mark();
+                   let mark_or = $r.mark();
                     let result = $x;
                     // here is where we match the result
-                    pr =  match result {
+                    pr = match result {
                         Ok(_) => { Ok(()) }, 
                         Err(ParseErr::DidNotMatch) => { $r.rewind(mark_or); Err(ParseErr::DidNotMatch)},
                         Err(ParseErr::Io(x)) => { Err(ParseErr::Io(x)) },
@@ -143,13 +143,17 @@ impl <R:Read> RewindableChars<R> {
         }
     }
 
+
+    /// Rewinds to the given mark
     pub fn rewind(&mut self, m: Mark) {
         match m {
             Pos(n) => self.pos = n,
         };
     }
 
-    pub fn mark(&mut self) -> Mark {
+
+    /// Takes a mark, which can then be re-wound to
+    pub fn mark(&self) -> Mark {
         Pos(self.pos)
     }
 
