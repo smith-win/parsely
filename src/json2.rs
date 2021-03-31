@@ -5,12 +5,9 @@ use std::vec::Vec;
 use crate::internals::{ParseResult, ParseErr};
 
 const U8_START_OBJ:u8 = '{' as u8;
-const U8_END_OBJ:u8 = '}' as u8;
 const U8_START_ARR:u8 = '[' as u8;
-const U8_END_ARR:u8 = ']' as u8;
 const U8_QUOTE:u8 = '\"' as u8;
 const U8_ESCAPE:u8 = '\\' as u8;
-const U8_COMMA:u8 = ',' as u8;
 const U8_MINUS:u8 = '-' as u8;
 const U8_0:u8 = '0' as u8;
 const U8_9:u8 = '9' as u8;
@@ -30,13 +27,13 @@ macro_rules! byte_seq {
 
 /// What does life time mean?
 #[derive(Debug)]
-pub enum JsonEvent2 {
+pub enum JsonEvent2<'a> {
 
     /// A string value
-    String(/* &'a str */),
+    String(&'a str),
 
     /// Event though it is a number, we'll leave to the client to decide what to co-erce it into (int, float or other)
-    Number(/* &'a str */),
+    Number(&'a str),
 
     /// Bool is true or false
     Boolean(bool),
@@ -73,8 +70,6 @@ pub struct JsonParser<R: Read> {
     buf_pos: usize,
     buf_cap: usize,
 
-    counts: (u32, u32),
-
     /// A buffer for collecting the current value being parsed
     string_buff: String,
 
@@ -90,7 +85,6 @@ impl <R: Read> JsonParser<R> {
     pub fn new(r: R) -> JsonParser<R> {
         JsonParser {
             read: r,
-            counts: (0, 0),
             buffer : Box::new([0u8; 8 * 1024]),
             buf_pos: 0,
             buf_cap: 0,
@@ -98,18 +92,6 @@ impl <R: Read> JsonParser<R> {
             stack: Vec::with_capacity(10), // 10 deep reasonable default
         }
     }
-
-
-    //
-    fn emit_token(&mut self, je: JsonEvent2) {
-        match je {
-            JsonEvent2::String() => { self.counts.0 += 1 },
-            JsonEvent2::Number() => { self.counts.0 += 1 },
-            JsonEvent2::ObjectStart => self.counts.1 += 1,
-            _ => {},
-        }
-    }
-
 
     /// "Peek" the next byte - used if we want to check if the next token
     /// is equal to something, and only consume it if is.  (Say we want ot check for  keyword etc})
@@ -120,14 +102,6 @@ impl <R: Read> JsonParser<R> {
             Ok(Some(self.buffer[self.buf_pos]))
         } else {
             Ok(None)
-        }
-    }
-
-    /// Like peek, but when you require a value to be present
-    fn peek_expected(&mut self) -> ParseResult<u8> {
-        match self.peek()? {
-            Some(b) => Ok(b),
-            None => Err(ParseErr::DidNotMatch),
         }
     }
 
@@ -203,35 +177,34 @@ impl <R: Read> JsonParser<R> {
     }
 
     
-    /// Called only from match number
-    fn match_digits(&mut self) -> ParseResult<u16> {
-        let mut count = 0usize;
+    /// Called only from match number, returns true if any digits matched
+    fn match_digits(&mut self) -> ParseResult<bool> {
+        
         while self.buf_cap > 0 {
-            if self.buf_pos < self.buf_cap && self.buf_pos < self.buf_cap /*self.buffer.len() */ {
-                
-                let mut x = 0usize;
-                unsafe  {
-                    self.string_buff.as_mut_vec().extend(
-                        self.buffer[self.buf_pos..self.buffer.len()]
-                            .iter()
-                            .take_while( |n| **n >= '0' as u8  && **n <= '9' as u8)
-                            .inspect( |_n| x += 1 )
-                        );
+            assert!(self.buf_cap <= self.buffer.len()); // to remove bounds checking
+            if self.buf_pos < self.buf_cap {
+
+                let end_pos = self.buf_pos + self.buffer[self.buf_pos..self.buf_cap]
+                    .iter()
+                    .take_while( |n| **n >= '0' as u8  && **n <= '9' as u8)
+                    .count();
+
+                unsafe {
+                    self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
                 }
-                count += x;
-                self.buf_pos += x;
+
+                self.buf_pos = end_pos;
                     
                 // TODO: check boundary here?
-                if x == 0 || self.buf_pos < self.buf_cap {
-                    break;
+                if self.buf_pos < self.buf_cap {
+                    return Ok(true);
                 }
 
             }  else {
                 self.replace_buffer()?;
             }
         } 
-        // println!("{} {}", count,  self.string_buff);
-        Ok(count as u16)
+        Ok(false)
     }
 
 
@@ -248,7 +221,7 @@ impl <R: Read> JsonParser<R> {
         }
 
         // if no numbers, its a cockup
-        if self.match_digits()? == 0 {
+        if !self.match_digits()? {
             return Err(ParseErr::DidNotMatch);
         }
 
@@ -256,17 +229,12 @@ impl <R: Read> JsonParser<R> {
         if self.consume_if( U8_PERIOD )? {
             self.string_buff.push('.');
 
-            if self.match_digits()? == 0 {
+            if !self.match_digits()? {
                 return Err(ParseErr::DidNotMatch);
             }
         }
 
-
-        self.emit_token(JsonEvent2::Number());
-        self.string_buff.clear();
-
-        // self.peeked.take();
-        Ok(JsonEvent2::Number())
+        Ok(JsonEvent2::Number(&self.string_buff))
         // digits 
 
         // . digit +
@@ -338,7 +306,6 @@ impl <R: Read> JsonParser<R> {
                     // end of string !
                     // TODO: zero-copy of string please!
                     // let the_str = self.string_buff.as_str();
-                    self.emit_token(JsonEvent2::String( /* the_str */ ));
                     return Ok(());
                 } 
 
@@ -383,7 +350,7 @@ impl <R: Read> JsonParser<R> {
         self.skip_whitespace() ?;
         // Peek the char
         match self.peek()? {
-            Some( U8_QUOTE ) => { self.match_string()?; Ok(JsonEvent2::String()) }
+            Some( U8_QUOTE ) => { self.match_string()?; Ok(JsonEvent2::String(&self.string_buff)) }
             Some( U8_START_ARR ) => {self.stack.push(JsonStackItem::Array(0)); self.buf_pos += 1; Ok(JsonEvent2::ArrayStart)}
             Some( U8_START_OBJ ) => {self.stack.push(JsonStackItem::Object(0)); self.buf_pos += 1; Ok(JsonEvent2::ObjectStart)}
             Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => self.match_number(),
@@ -444,8 +411,6 @@ impl <R: Read> JsonParser<R> {
         self.it_match_value()
 
     }
-
-
 
     // This is a typical coding issue
     //  1) if let Some() .. borrows "e" from self.stack
@@ -523,6 +488,10 @@ mod tests {
             count += 1;
             if count > 100 {
                 panic!("not supposed to loop forever!")
+            }
+            match e {
+                JsonEvent2::String(s) => println!("String value is {}", s),
+                _ => {}
             }
         }
         Ok(())
