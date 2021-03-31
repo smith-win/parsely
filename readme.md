@@ -141,6 +141,7 @@ looking at the encoding rules ... we can "ignore" anything > 127 ? (just skip it
 means >= 128 && < 192
 
 
+
 Performance notes:
 
 1) How stupid am I???   Our internal buffer we never called "accept" to clear it.
@@ -148,33 +149,7 @@ Performance notes:
     - json, we know what must be next
 
 
-
-
 extern crate parsely;
-
-
-// use parsely::json::JsonParser;
-use parsely::json2::JsonParser;
-use std::io::{Read, BufReader, Bytes};
-use std::fs::File;
-
-fn main() {
-
-    let args : Vec<String> = std::env::args().collect();
-
-    let filename =  args.get(1).unwrap();
-    
-    for i in 1..3 {
-        println!("Parsing #{}", i);
-        let f = std::fs::File::open( filename ).unwrap();
-        let buf = BufReader::new(f);
-        // let mut json = JsonParser::new(buf.bytes());
-        // json.parse().unwrap();
-        let mut json = JsonParser::new(buf);
-        json.parse().unwrap();
-    }
-
-}
 
 
 
@@ -206,8 +181,4 @@ These are the events we make
 
 31Mar2021
 First iterative version working in rough, with basic errors when reach EOF, or invalid data (e..g  array not closed etc)
-
-
-
-
 
