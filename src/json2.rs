@@ -1,6 +1,6 @@
 //! Json parser, using only an iterator over bytes
 
-use std::io::Read;
+use std::{io::Read};
 use std::vec::Vec;
 use crate::internals::{ParseResult, ParseErr};
 
@@ -47,6 +47,62 @@ pub enum JsonEvent2<'a> {
     ArrayStart,
     ArrayEnd,
 }
+
+
+/// These functions are mainly used to support test cases
+impl <'a> JsonEvent2<'a> {
+
+    pub fn is_string(&self) -> bool {
+        match self {
+            &JsonEvent2::String(_) => true,
+            _ => false
+        }
+    }
+    pub fn is_number(&self) -> bool {
+        match self {
+            &JsonEvent2::Number(_) => true,
+            _ => false
+        }
+    }
+    pub fn is_null(&self) -> bool {
+        match self {
+            &JsonEvent2::Null => true,
+            _ => false
+        }
+    }
+    pub fn is_bool(&self) -> bool {
+        match self {
+            &JsonEvent2::Boolean(_) => true,
+            _ => false
+        }
+    }
+    pub fn is_obj_start(&self) -> bool {
+        match self {
+            &JsonEvent2::ObjectStart  => true,
+            _ => false
+        }
+    }
+    pub fn is_obj_end(&self) -> bool {
+        match self {
+            &JsonEvent2::ObjectEnd => true,
+            _ => false
+        }
+    }
+    pub fn is_arr_start(&self) -> bool {
+        match self {
+            &JsonEvent2::ArrayStart => true,
+            _ => false
+        }
+    }
+    pub fn is_arr_end(&self) -> bool {
+        match self {
+            &JsonEvent2::ArrayEnd => true,
+            _ => false
+        }
+    }
+
+}
+
 
 /// Private enum that keeps track of parse position
 #[derive(Debug)]
@@ -129,7 +185,11 @@ impl <R: Read> JsonParser<R> {
         // re-fill the buffer
         self.buf_pos = 0;
         match self.read.read(&mut *self.buffer) {
-            Ok(n) => { self.buf_cap = n; Ok(())} ,
+            Ok(n) => { 
+                self.buf_cap = n; 
+                assert!(self.buf_pos <= self.buf_cap);
+                Ok(())
+            } ,
             Err(io) =>  Err(ParseErr::Io(io)),
         }
     }
@@ -176,34 +236,129 @@ impl <R: Read> JsonParser<R> {
         Err(ParseErr::DidNotMatch)
     }
 
+    /// Used on the remainder of the SIMD func, we put here
+    /// see can see the effect of SIMD vs non-SiMD in the result
+    fn count_digits_slow(arr: &[u8]) -> ParseResult<usize> {
+        Ok(arr.iter()
+            .take_while( |n| **n >= b'0' && **n <= b'9')
+            .count()
+        )
+    }
+
+    /// Attempt at SIMD (sse2) for matching digits 
+    #[inline]
+    fn match_digits/*_simd*/(&mut self) -> ParseResult<bool> {
+        //Compare packed unsigned 8-bit integers in a and b based 
+        // on the comparison operand specified by imm8, and store the results
+        // in mask vector k.
+
+        //sse2 simd intructions are not nightly -- thats why I use them :-)
+            
+        use core::arch::x86_64::{/*__m128i, */ _mm_movemask_epi8, _mm_set_epi8, _mm_cmplt_epi8, _mm_cmpgt_epi8, _mm_set1_epi8, _mm_tzcnt_32 };
+
+        // we could const these ?  no create each time?
+        let zeros = unsafe {_mm_set1_epi8(b'0' as i8) };
+        let nines = unsafe { _mm_set1_epi8(b'9' as i8) };
+
+        // edge-case --ensure we have room in buffer, not starting on empty!
+        while self.buf_cap > 0 {
+            //assert!(self.buf_cap <= self.buffer.len()); // to remove bounds checking
+
+            let c = self.buffer[self.buf_pos..self.buf_cap].chunks_exact(16);
+            let remainder = c.remainder();
+
+            let mut num_digits = 0usize;
+            let mut end = false;
+            // process each block of 16
+            for b in c {
+
+                let x = unsafe {
+                    // _mm_setr_epi8 -- "r" means in reverse order
+                    let vec = _mm_set_epi8(b[15] as i8, b[14] as i8, b[13] as i8, b[12] as i8, b[11] as i8, b[10] as i8, b[9] as i8, b[8] as i8, b[7] as i8, b[6] as i8, b[5] as i8, b[4] as i8, b[3] as i8, b[2] as i8, b[1] as i8, b[0] as i8 );
+                    let x = _mm_cmplt_epi8(vec, zeros);
+                    let y = _mm_cmpgt_epi8(vec, nines);
+            
+                    let x1 = _mm_movemask_epi8(x);
+                    let y1 = _mm_movemask_epi8(y);
+
+                    // rather than take the min, AND with 31 (as we know anser will be in lower bits)
+                    // the two results x1,y1 are both < 16, 
+                    // answer from _mm_tzcnt_32 can be 32 if all matched (as it takes u32 rather than u16)
+                    0b11111 & _mm_tzcnt_32( (x1 | y1 ) as u32) as usize
+
+                    // Shown to be slower then the AND trick is a "min" as it doesn't need a compare
+                    //std::cmp::min(_mm_tzcnt_32( (x1 | y1 ) as u32), 16) as usize
+                };
+
+                num_digits += x ;
+
+                // this compare and branch is quite slow
+                if x != 16 {
+                    // not all digits, we can break
+                    //num_digits += x;
+                    end = true;
+                    break;
+                } 
+            }
+
+            if !end {
+                // we don't need to check remainder if we cut out early
+                // we go slowly (one at time over the remainder)
+                num_digits += Self::count_digits_slow(remainder)?
+            }
+            
+            let end_pos = self.buf_pos + num_digits;
+            // commented out to get "perf" to measure parse-time only
+            // unsafe {
+            //     self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
+            // }
+            
+            self.buf_pos = end_pos;
+            // if we got to the end of the buffer, reload and start again
+            // TODO: check boundary here?
+            if self.buf_pos < self.buf_cap {
+                return Ok(true);
+            } else {
+                self.replace_buffer()?;
+            }
+        }
+
+        Ok(false)
+
+   }
     
     /// Called only from match number, returns true if any digits matched
-    fn match_digits(&mut self) -> ParseResult<bool> {
+    fn match_digits_x(&mut self) -> ParseResult<bool> {
         
         while self.buf_cap > 0 {
             assert!(self.buf_cap <= self.buffer.len()); // to remove bounds checking
-            if self.buf_pos < self.buf_cap {
 
-                let end_pos = self.buf_pos + self.buffer[self.buf_pos..self.buf_cap]
-                    .iter()
-                    .take_while( |n| **n >= '0' as u8  && **n <= '9' as u8)
-                    .count();
+            let end_pos = self.buf_pos + self.buffer[self.buf_pos..self.buf_cap]
+                .iter()
+                .take_while( |n| **n >= b'0' && **n <= b'9')
+                .count();
+            // let mut n = 0usize;
+            // for c in &self.buffer[self.buf_pos..self.buf_cap] {
+            //     if *c <  b'0' || *c > b'9'{
+            //         break;
+            //     }
+            //     n += 1;
+            // }
+            // let end_pos = self.buf_pos + n;
 
-                unsafe {
-                    self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
-                }
-
-                self.buf_pos = end_pos;
-                    
-                // TODO: check boundary here?
-                if self.buf_pos < self.buf_cap {
-                    return Ok(true);
-                }
-
-            }  else {
-                self.replace_buffer()?;
+            unsafe {
+                self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
             }
-        } 
+
+            self.buf_pos = end_pos;
+                
+            // TODO: check boundary here?
+            if self.buf_pos < self.buf_cap {
+                return Ok(true);
+            }
+
+            self.replace_buffer()?;
+        }
         Ok(false)
     }
 
@@ -419,7 +574,7 @@ impl <R: Read> JsonParser<R> {
     //
     /// Attemt for parsing iteratively
     /// Ok(None) - end of parsing
-    /// ```
+    /// 
     /// pub fn next_token(&mut self) -> ParseResult<Option<&JsonEvent2>> {
     ///     // if stack is empty, any valie JSON Value item can be next
     ///     println!("Stack len = {}", self.stack.len());
@@ -429,7 +584,7 @@ impl <R: Read> JsonParser<R> {
     ///         Ok(Some( self.it_match_member()? ))
     ///     }
     /// } 
-    /// ```
+    /// 
     pub fn next_token(&mut self) -> ParseResult<Option<JsonEvent2>> {
         // if stack is empty, any valie JSON Value item can be next
         // println!("Stack len = {:?}", self.stack);
@@ -452,6 +607,33 @@ impl <R: Read> JsonParser<R> {
         }
 
     } 
+
+    /// read all bytes!
+    pub fn count_all_bytes(&mut self) -> ParseResult<usize>{
+        let mut result = 0usize;
+        self.replace_buffer()?;
+
+        let mut s = String::with_capacity(50);
+
+        while self.buf_cap > 0 {
+
+            for c in &self.buffer[self.buf_pos..self.buf_cap] {
+                if *c >= b'0' && *c <= b'9' {
+                    result +=1;
+                    s.push(*c as char);
+                } else if s.len() >0 {
+                    s.clear();
+                }
+            }
+            self.replace_buffer()?;
+        }
+
+        println!("{}", s);
+
+        Ok(result)
+
+    }
+
 }
 
 
@@ -471,7 +653,7 @@ mod tests {
     #[test]
     fn test_it_parse_obj() -> ParseResult<()> {
         let x = r##"{ 
-            "hello": "world", "fruit":"banana", "fruit":"banana", "fruit":"banana", "fruit":"banana"
+            "hello": "world", "fruit0":"apple", "fruit1":"banana", "fruit2":"cherry", "fruit3":"damson"
             , "second": {"Aardvark":"A"}
             , "third": {
                 "Albatross":"A",
@@ -482,27 +664,63 @@ mod tests {
         }"##;
         println!("{}", x);
         let mut p = test_parser(x);
-        let mut count = 0;
-        while let Some(e) = p.next_token()? {
-            println!(">> {:?}", e);
-            count += 1;
-            if count > 100 {
-                panic!("not supposed to loop forever!")
-            }
-            match e {
-                JsonEvent2::String(s) => println!("String value is {}", s),
-                _ => {}
-            }
-        }
+        // let mut count = 0;
+
+        assert!( (p.next_token()?).unwrap().is_obj_start() );
+            assert!( (p.next_token()?).unwrap().is_string() );
+            assert!( (p.next_token()?).unwrap().is_string() );
+            assert!( (p.next_token()?).unwrap().is_string() );
+            assert!( (p.next_token()?).unwrap().is_string() );
+            assert!( (p.next_token()?).unwrap().is_string() );
+            assert!( (p.next_token()?).unwrap().is_obj_start() );
+                assert!( (p.next_token()?).unwrap().is_string() ); // Aardvark
+            assert!( (p.next_token()?).unwrap().is_obj_end() );
+            assert!( (p.next_token()?).unwrap().is_obj_start() ); // third
+                assert!( (p.next_token()?).unwrap().is_string() );
+                assert!( (p.next_token()?).unwrap().is_obj_start() ); // fourth
+                    assert!( (p.next_token()?).unwrap().is_string() ); 
+                assert!( (p.next_token()?).unwrap().is_obj_end() );
+                assert!( (p.next_token()?).unwrap().is_number() ); 
+                assert!( (p.next_token()?).unwrap().is_bool() ); 
+            assert!( (p.next_token()?).unwrap().is_obj_end() );
+        assert!( (p.next_token()?).unwrap().is_obj_end() );
+                
+        assert!( (p.next_token()?).is_none() );
+
+        // while let Some(e) = p.next_token()? {
+        //     println!(">> {:?}", e);
+        //     count += 1;
+        //     if count > 100 {
+        //         panic!("not supposed to loop forever!")
+        //     }
+        //     match e {
+        //         JsonEvent2::String(s) => println!("String value is {}", s),
+        //         _ => {}
+        //     }
+        // }
         Ok(())
     }
 
     #[test]
     fn test_it_parse_arr() -> ParseResult<()> {
         let mut p = test_parser(r##"[1, [1.1, "1.2", 1.3], 3, {"a":"nested"}, true, false, null]"##);
-        while let Some(e) = p.next_token()? {
-            println!(">> {:?}", e);
-        }
+        assert!( (p.next_token()?).unwrap().is_arr_start() );
+        assert!( (p.next_token()?).unwrap().is_number() );
+        assert!( (p.next_token()?).unwrap().is_arr_start() );
+        assert!( (p.next_token()?).unwrap().is_number() );
+        assert!( (p.next_token()?).unwrap().is_string() );
+        assert!( (p.next_token()?).unwrap().is_number() );
+        assert!( (p.next_token()?).unwrap().is_arr_end() );
+        assert!( (p.next_token()?).unwrap().is_number() );
+        assert!( (p.next_token()?).unwrap().is_obj_start() );
+        assert!( (p.next_token()?).unwrap().is_string() );
+        assert!( (p.next_token()?).unwrap().is_obj_end() );
+        assert!( (p.next_token()?).unwrap().is_bool() );
+        assert!( (p.next_token()?).unwrap().is_bool() );
+        assert!( (p.next_token()?).unwrap().is_null() );
+        assert!( (p.next_token()?).unwrap().is_arr_end() );
+
+        assert!( (p.next_token()?).is_none() );
         Ok(())
     }
 

@@ -14,9 +14,11 @@ fn main() -> ParseResult<()> {
     for i in 0..10 {
         println!("Parsing #{}", i);
         let f = std::fs::File::open( filename ).unwrap();
-        let buf = BufReader::new(f);
+        let buf = BufReader::with_capacity(1024 * 128, f);
         let json = JsonParser::new(buf);
         do_parse(json) ?;
+        // let mut json = JsonParser::new(buf);
+        // println!("Number of bytes in file: {}", json.count_all_bytes().unwrap());
     }
 
     Ok(())
