@@ -13,6 +13,42 @@ const U8_0:u8 = '0' as u8;
 const U8_9:u8 = '9' as u8;
 const U8_PERIOD:u8 = '.' as u8;
 
+
+// Character flags
+// we have 8 to choose from
+//  - non-plain text chars like " and \ when looking at strings
+// const FLAG_WS:u8 = 1;
+const FLAG_DIGIT:u8 = 2;
+const CHAR_FLAGS : [u8; 256] = {
+    let mut x = [0u8; 256];
+
+    // Whitespace chars
+    // x[10] = FLAG_WS;
+    // x[13] = FLAG_WS;
+
+    // Digits
+    x[b'0' as usize] = FLAG_DIGIT;
+    x[b'1' as usize] = FLAG_DIGIT;
+    x[b'2' as usize] = FLAG_DIGIT;
+    x[b'3' as usize] = FLAG_DIGIT;
+    x[b'4' as usize] = FLAG_DIGIT;
+    x[b'5' as usize] = FLAG_DIGIT;
+    x[b'6' as usize] = FLAG_DIGIT;
+    x[b'7' as usize] = FLAG_DIGIT;
+    x[b'8' as usize] = FLAG_DIGIT;
+    x[b'9' as usize] = FLAG_DIGIT;
+
+    x
+};
+
+#[inline]
+// Is the item a digit
+const fn is_digit(c: u8) -> bool {
+    CHAR_FLAGS[c as usize] & FLAG_DIGIT == FLAG_DIGIT
+}
+
+
+
 /// Checks a sequence of bytes match - useful for constants
 macro_rules! byte_seq {
     // first arg is parser/rewinder, then the args
@@ -247,7 +283,7 @@ impl <R: Read> JsonParser<R> {
 
     /// Attempt at SIMD (sse2) for matching digits 
     #[inline]
-    fn match_digits/*_simd*/(&mut self) -> ParseResult<bool> {
+    fn match_digits_x/*_simd*/(&mut self) -> ParseResult<bool> {
         //Compare packed unsigned 8-bit integers in a and b based 
         // on the comparison operand specified by imm8, and store the results
         // in mask vector k.
@@ -281,7 +317,7 @@ impl <R: Read> JsonParser<R> {
                     let x1 = _mm_movemask_epi8(x);
                     let y1 = _mm_movemask_epi8(y);
 
-                    // rather than take the min, AND with 31 (as we know anser will be in lower bits)
+                    // rather than take the min, AND with 31 (as we know answer will be in lower bits)
                     // the two results x1,y1 are both < 16, 
                     // answer from _mm_tzcnt_32 can be 32 if all matched (as it takes u32 rather than u16)
                     0b11111 & _mm_tzcnt_32( (x1 | y1 ) as u32) as usize
@@ -328,18 +364,20 @@ impl <R: Read> JsonParser<R> {
    }
     
     /// Called only from match number, returns true if any digits matched
-    fn match_digits_x(&mut self) -> ParseResult<bool> {
+    fn match_digits(&mut self) -> ParseResult<bool> {
         
         while self.buf_cap > 0 {
             assert!(self.buf_cap <= self.buffer.len()); // to remove bounds checking
 
             let end_pos = self.buf_pos + self.buffer[self.buf_pos..self.buf_cap]
                 .iter()
-                .take_while( |n| **n >= b'0' && **n <= b'9')
+                //.take_while( |n| **n >= b'0' && **n <= b'9')
+                .take_while( |n| is_digit(**n))
                 .count();
             // let mut n = 0usize;
             // for c in &self.buffer[self.buf_pos..self.buf_cap] {
             //     if *c <  b'0' || *c > b'9'{
+            //     // if !is_digit(*c) {
             //         break;
             //     }
             //     n += 1;
@@ -406,6 +444,7 @@ impl <R: Read> JsonParser<R> {
         // e.g. [\-]+ [0-9]* (\. [0-9]*)+ (e|E) ... etc
 
     }
+
 
     /// Matches a quoted string
     fn match_string(&mut self) -> ParseResult<()> {
@@ -650,6 +689,13 @@ mod tests {
         )
     }
 
+
+    /// Little test helper
+    fn token<R: Read>(p: &mut JsonParser<R> ) -> JsonEvent2 {
+        p.next_token().unwrap().unwrap()
+    }
+
+
     #[test]
     fn test_it_parse_obj() -> ParseResult<()> {
         let x = r##"{ 
@@ -664,26 +710,26 @@ mod tests {
         }"##;
         println!("{}", x);
         let mut p = test_parser(x);
-        // let mut count = 0;
+        let p = &mut p;
 
-        assert!( (p.next_token()?).unwrap().is_obj_start() );
-            assert!( (p.next_token()?).unwrap().is_string() );
-            assert!( (p.next_token()?).unwrap().is_string() );
-            assert!( (p.next_token()?).unwrap().is_string() );
-            assert!( (p.next_token()?).unwrap().is_string() );
-            assert!( (p.next_token()?).unwrap().is_string() );
-            assert!( (p.next_token()?).unwrap().is_obj_start() );
-                assert!( (p.next_token()?).unwrap().is_string() ); // Aardvark
-            assert!( (p.next_token()?).unwrap().is_obj_end() );
-            assert!( (p.next_token()?).unwrap().is_obj_start() ); // third
-                assert!( (p.next_token()?).unwrap().is_string() );
-                assert!( (p.next_token()?).unwrap().is_obj_start() ); // fourth
-                    assert!( (p.next_token()?).unwrap().is_string() ); 
-                assert!( (p.next_token()?).unwrap().is_obj_end() );
-                assert!( (p.next_token()?).unwrap().is_number() ); 
-                assert!( (p.next_token()?).unwrap().is_bool() ); 
-            assert!( (p.next_token()?).unwrap().is_obj_end() );
-        assert!( (p.next_token()?).unwrap().is_obj_end() );
+        assert!( token(p).is_obj_start() );
+            assert!( token(p).is_string() );
+            assert!( token(p).is_string() );
+            assert!( token(p).is_string() );
+            assert!( token(p).is_string() );
+            assert!( token(p).is_string() );
+            assert!( token(p).is_obj_start() );
+                assert!( token(p).is_string() ); // Aardvark
+            assert!( token(p).is_obj_end() );
+            assert!( token(p).is_obj_start() ); // third
+                assert!( token(p).is_string() );
+                assert!( token(p).is_obj_start() ); // fourth
+                    assert!( token(p).is_string() ); 
+                assert!( token(p).is_obj_end() );
+                assert!( token(p).is_number() ); 
+                assert!( token(p).is_bool() ); 
+            assert!( token(p).is_obj_end() );
+        assert!( token(p).is_obj_end() );
                 
         assert!( (p.next_token()?).is_none() );
 
@@ -704,25 +750,81 @@ mod tests {
     #[test]
     fn test_it_parse_arr() -> ParseResult<()> {
         let mut p = test_parser(r##"[1, [1.1, "1.2", 1.3], 3, {"a":"nested"}, true, false, null]"##);
-        assert!( (p.next_token()?).unwrap().is_arr_start() );
-        assert!( (p.next_token()?).unwrap().is_number() );
-        assert!( (p.next_token()?).unwrap().is_arr_start() );
-        assert!( (p.next_token()?).unwrap().is_number() );
-        assert!( (p.next_token()?).unwrap().is_string() );
-        assert!( (p.next_token()?).unwrap().is_number() );
-        assert!( (p.next_token()?).unwrap().is_arr_end() );
-        assert!( (p.next_token()?).unwrap().is_number() );
-        assert!( (p.next_token()?).unwrap().is_obj_start() );
-        assert!( (p.next_token()?).unwrap().is_string() );
-        assert!( (p.next_token()?).unwrap().is_obj_end() );
-        assert!( (p.next_token()?).unwrap().is_bool() );
-        assert!( (p.next_token()?).unwrap().is_bool() );
-        assert!( (p.next_token()?).unwrap().is_null() );
-        assert!( (p.next_token()?).unwrap().is_arr_end() );
+        let p = &mut p;
+        assert!( token(p).is_arr_start() );
+        assert!( token(p).is_number() );
+        assert!( token(p).is_arr_start() );
+        assert!( token(p).is_number() );
+        assert!( token(p).is_string() );
+        assert!( token(p).is_number() );
+        assert!( token(p).is_arr_end() );
+        assert!( token(p).is_number() );
+        assert!( token(p).is_obj_start() );
+        assert!( token(p).is_string() );
+        assert!( token(p).is_obj_end() );
+        assert!( token(p).is_bool() );
+        assert!( token(p).is_bool() );
+        assert!( token(p).is_null() );
+        assert!( token(p).is_arr_end() );
 
         assert!( (p.next_token()?).is_none() );
         Ok(())
     }
+
+
+    /// Create a byemask from a char
+     fn byte_mask_128(b: u8) -> u128 {
+        let mut x = 0u128;
+        for _i in 0..16 {
+            x += b as u128;
+            x <<= 8;
+        }
+        x
+    }
+
+
+    /// Find the first quote in a String
+    fn find_quote(s: &str) -> u32 {
+        // we can assume its UTF-8 ?
+        let b = s.as_bytes();
+
+        let quote = '\"' as u8;
+        let chk = &[quote; 16];
+        println!("{:?}", chk);
+        println!("{:?}", b);
+        println!("Mask {:#130b}", byte_mask_128(quote));
+        let res = &mut[0u8; 16];
+        
+        let mut count = 0;
+        let iter = b.chunks_exact(16);
+        for bytes in iter {
+            
+            for n in 0..16 {
+                // println!("<< {}  {}  {} >>", bytes[n], chk[n], bytes[n] | chk[n]);
+                res[n] = bytes[n] & chk[n] ;
+            }
+
+            let x = u128::from_be_bytes(*res) & byte_mask_128(quote) ;
+
+            println!("{} {} {:#130b}", count, x, x);
+            println!("{:?}", res);
+
+            if x != 0 {
+                return count + x.leading_zeros() as u32;
+            }
+            count += 16;
+
+        }
+
+        // worry about remainder later
+        b.len() as u32
+    }
+
+
+    #[test]
+    pub fn check_find_quote() {
+        assert_eq!(7, find_quote(r##"0123456701234567012345670123456701234567"##));
+    } 
 
 
 }
