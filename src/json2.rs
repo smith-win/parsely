@@ -17,14 +17,16 @@ const U8_PERIOD:u8 = '.' as u8;
 // Character flags
 // we have 8 to choose from
 //  - non-plain text chars like " and \ when looking at strings
-// const FLAG_WS:u8 = 1;
+// const FLAG_WS:u8 = 4;
 const FLAG_DIGIT:u8 = 2;
+const FLAG_NOT_TEXT:u8 = 1;
 const CHAR_FLAGS : [u8; 256] = {
     let mut x = [0u8; 256];
 
     // Whitespace chars
     // x[10] = FLAG_WS;
     // x[13] = FLAG_WS;
+
 
     // Digits
     x[b'0' as usize] = FLAG_DIGIT;
@@ -37,6 +39,10 @@ const CHAR_FLAGS : [u8; 256] = {
     x[b'7' as usize] = FLAG_DIGIT;
     x[b'8' as usize] = FLAG_DIGIT;
     x[b'9' as usize] = FLAG_DIGIT;
+
+    // Not plain text
+    x[b'\\' as usize] = FLAG_NOT_TEXT;
+    x[b'"' as usize] = FLAG_NOT_TEXT;
 
     x
 };
@@ -430,7 +436,7 @@ impl <R: Read> JsonParser<R> {
         }
 
         // if no numbers, its a cockup
-        if !self.match_digits()? {
+        if !self.match_digits_simd()? {
             return Err(ParseErr::DidNotMatch);
         }
 
@@ -438,7 +444,7 @@ impl <R: Read> JsonParser<R> {
         if self.consume_if( U8_PERIOD )? {
             self.string_buff.push('.');
 
-            if !self.match_digits()? {
+            if !self.match_digits_simd()? {
                 return Err(ParseErr::DidNotMatch);
             }
         }
@@ -471,14 +477,6 @@ impl <R: Read> JsonParser<R> {
         //let mut s = String::new();
         self.string_buff.clear();
         let mut escaped = false;
-
-        // trying to significantly beat 4.2 seconds
-        // String "push" -- does not appear to be issue
-        // let mut range_start = self.buf_pos;
-        // let fast_check = [0u8, 0u8, 0u8, 0u8];
-
-        // quote         34 - 
-        // back slash = 134 = 
 
         loop {
 
@@ -521,7 +519,7 @@ impl <R: Read> JsonParser<R> {
 
                 // TODO: try not to cast to char?
                 // just append to result
-                self.string_buff.push( c as char);
+                //self.string_buff.push( c as char);
 
             }  else {
                 self.replace_buffer() ?;
@@ -556,14 +554,19 @@ impl <R: Read> JsonParser<R> {
         Err(ParseErr::DidNotMatch)
     }
 
+    //  #[inline] - did no make much difference
     fn it_match_value(&mut self) -> ParseResult<JsonEvent2> {
         self.skip_whitespace() ?;
         // Peek the char
         match self.peek()? {
-            Some( U8_QUOTE ) => { self.match_string()?; Ok(JsonEvent2::String(&self.string_buff)) }
-            Some( U8_START_ARR ) => {self.stack.push(JsonStackItem::Array(0)); self.buf_pos += 1; Ok(JsonEvent2::ArrayStart)}
-            Some( U8_START_OBJ ) => {self.stack.push(JsonStackItem::Object(0)); self.buf_pos += 1; Ok(JsonEvent2::ObjectStart)}
-            Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => self.match_number(),
+            Some( U8_QUOTE ) => { self.match_string()?; 
+                Ok(JsonEvent2::String(&self.string_buff)) }
+            Some( U8_START_ARR ) => {self.stack.push(JsonStackItem::Array(0)); 
+                self.buf_pos += 1; Ok(JsonEvent2::ArrayStart)}
+            Some( U8_START_OBJ ) => {self.stack.push(JsonStackItem::Object(0)); 
+                self.buf_pos += 1; Ok(JsonEvent2::ObjectStart)}
+            Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => 
+                self.match_number(),
             Some( b ) => self.match_keyword( b ) ,
             _ => Err(ParseErr::DidNotMatch),
         }        
@@ -571,8 +574,10 @@ impl <R: Read> JsonParser<R> {
 
     /// Match an array
     fn it_match_obj_array(&mut self, n: usize) -> ParseResult<JsonEvent2> {
+        // whitespace skipped before entry
+        // self.skip_whitespace()?;
+
         // we can take end of object immediatley
-        self.skip_whitespace()?;
         if self.consume_if(b']')? {
             // pop from stack, ensure char is consumed
             self.stack.pop();
@@ -596,7 +601,7 @@ impl <R: Read> JsonParser<R> {
 
     fn it_match_obj_member(&mut self, n: usize) -> ParseResult<JsonEvent2> {
         // we can take end of object immediatley
-        self.skip_whitespace()?;
+        // self.skip_whitespace()?;
         if self.consume_if(b'}')? {
             // pop from stack, ensure char is consumed
             self.stack.pop();
@@ -622,28 +627,13 @@ impl <R: Read> JsonParser<R> {
 
     }
 
-    // This is a typical coding issue
-    //  1) if let Some() .. borrows "e" from self.stack
-    //  2) call 
-    //
-    //
-    /// Attemt for parsing iteratively
-    /// Ok(None) - end of parsing
-    /// 
-    /// pub fn next_token(&mut self) -> ParseResult<Option<&JsonEvent2>> {
-    ///     // if stack is empty, any valie JSON Value item can be next
-    ///     println!("Stack len = {}", self.stack.len());
-    ///     if let Some(e) =  self.stack.last() {
-    ///         self.expect_from_stack(e)
-    ///     } else {
-    ///         Ok(Some( self.it_match_member()? ))
-    ///     }
-    /// } 
-    /// 
+    /// Iteratir style function, returns the next token in the parse 
     pub fn next_token(&mut self) -> ParseResult<Option<JsonEvent2>> {
         // if stack is empty, any valie JSON Value item can be next
         // println!("Stack len = {:?}", self.stack);
 
+        // We skip whitespace at start of each call, should not need to do in 
+        // each parse method
         self.skip_whitespace() ?;
 
         // bit hacky .. check for EOF
