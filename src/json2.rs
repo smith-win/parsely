@@ -156,11 +156,11 @@ pub struct JsonParser<R: Read> {
     read: R,
 
     /// Local buffer seems faster than Reader.bytes() / Bytes
-    buffer: Box<[u8]>,
+    buffer: Vec<u8>,
 
     // buffer position and capacty info
     buf_pos: usize,
-    buf_cap: usize,
+    //buf_cap: usize,
 
     /// A buffer for collecting the current value being parsed
     string_buff: String,
@@ -177,9 +177,8 @@ impl <R: Read> JsonParser<R> {
     pub fn new(r: R) -> JsonParser<R> {
         JsonParser {
             read: r,
-            buffer : Box::new([0u8; 8 * 1024]),
+            buffer : Vec::with_capacity(8 * 1024),
             buf_pos: 0,
-            buf_cap: 0,
             string_buff : String::with_capacity(300), // guess at effective initial size
             stack: Vec::with_capacity(10), // 10 deep reasonable default
         }
@@ -190,7 +189,7 @@ impl <R: Read> JsonParser<R> {
     #[inline]
     fn peek(&mut self) -> ParseResult<Option<u8>> {
         self.ensure_buffer()?;
-        if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+        if self.buf_pos < self.buffer.len() {
             Ok(Some(self.buffer[self.buf_pos]))
         } else {
             Ok(None)
@@ -199,16 +198,17 @@ impl <R: Read> JsonParser<R> {
 
     #[inline]
     fn ensure_buffer(&mut self) -> ParseResult<()> {
-        if self.buf_pos >= self.buf_cap {
+        if self.buf_pos >= self.buffer.len() {
             self.replace_buffer()? ;
         }
         Ok(())
     }
 
     /// If current position matches the char, eat it and return true
+    #[inline]
     fn consume_if(&mut self, b: u8) -> ParseResult<bool> {
         self.ensure_buffer()?;
-        if self.buf_pos < self.buffer.len() && b == self.buffer[self.buf_pos] {
+        if self.buf_pos < self.buffer.len() &&  b == self.buffer[self.buf_pos] {
             self.buf_pos += 1;
             Ok(true)
         } else {
@@ -219,11 +219,11 @@ impl <R: Read> JsonParser<R> {
 
     fn replace_buffer(&mut self) -> ParseResult<()> {
         // re-fill the buffer
+        self.buffer.resize(8*0124, 0);
         self.buf_pos = 0;
-        match self.read.read(&mut *self.buffer) {
+        match self.read.read(&mut self.buffer) {
             Ok(n) => { 
-                self.buf_cap = n; 
-                assert!(self.buf_pos <= self.buf_cap);
+                self.buffer.truncate(n);
                 Ok(())
             } ,
             Err(io) =>  Err(ParseErr::Io(io)),
@@ -237,8 +237,9 @@ impl <R: Read> JsonParser<R> {
 
         loop {
 
-            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
-                let x = self.buffer[self.buf_pos] ;
+            if self.buf_pos < self.buffer.len() {
+                // let x = self.buffer[self.buf_pos] ;
+                let x = * unsafe{self.buffer.get_unchecked(self.buf_pos) };
 
                 if x == 32 || x==9 || x == 8 || x == 10 || x == 13 {
                     self.buf_pos += 1 ;
@@ -248,7 +249,7 @@ impl <R: Read> JsonParser<R> {
             } else {
                 self.replace_buffer()?;
                 // check for EOF
-                if self.buf_cap == 0 {
+                if self.buffer.len() == 0 {
                     return Ok(());
                 }
             }
@@ -283,7 +284,7 @@ impl <R: Read> JsonParser<R> {
 
     /// Attempt at SIMD (sse2) for matching digits 
     #[inline]
-    fn match_digits_x/*_simd*/(&mut self) -> ParseResult<bool> {
+    fn match_digits_simd(&mut self) -> ParseResult<bool> {
         //Compare packed unsigned 8-bit integers in a and b based 
         // on the comparison operand specified by imm8, and store the results
         // in mask vector k.
@@ -297,10 +298,10 @@ impl <R: Read> JsonParser<R> {
         let nines = unsafe { _mm_set1_epi8(b'9' as i8) };
 
         // edge-case --ensure we have room in buffer, not starting on empty!
-        while self.buf_cap > 0 {
+        while !self.buffer.is_empty()  {
             //assert!(self.buf_cap <= self.buffer.len()); // to remove bounds checking
 
-            let c = self.buffer[self.buf_pos..self.buf_cap].chunks_exact(16);
+            let c = self.buffer[self.buf_pos..self.buffer.len()].chunks_exact(16);
             let remainder = c.remainder();
 
             let mut num_digits = 0usize;
@@ -352,7 +353,7 @@ impl <R: Read> JsonParser<R> {
             self.buf_pos = end_pos;
             // if we got to the end of the buffer, reload and start again
             // TODO: check boundary here?
-            if self.buf_pos < self.buf_cap {
+            if self.buf_pos < self.buffer.len() {
                 return Ok(true);
             } else {
                 self.replace_buffer()?;
@@ -364,16 +365,31 @@ impl <R: Read> JsonParser<R> {
    }
     
     /// Called only from match number, returns true if any digits matched
+    /// // we'll try inlining, because only used in number check
+    #[inline]
     fn match_digits(&mut self) -> ParseResult<bool> {
         
-        while self.buf_cap > 0 {
-            assert!(self.buf_cap <= self.buffer.len()); // to remove bounds checking
+        while !self.buffer.is_empty() {
 
-            let end_pos = self.buf_pos + self.buffer[self.buf_pos..self.buf_cap]
+            let mut inc = 0;
+            while self.buf_pos < self.buffer.len() - 3 {
+
+                if !is_digit(self.buffer[self.buf_pos]) { return Ok(true)}
+                if !is_digit(self.buffer[self.buf_pos+1]) { self.buf_pos += 1; return Ok(true);}
+                if !is_digit(self.buffer[self.buf_pos+2]) { self.buf_pos += 2; return Ok(true);}
+                if !is_digit(self.buffer[self.buf_pos+3]) { self.buf_pos += 3; return Ok(true);}
+
+                self.buf_pos += 4;
+            }
+
+            // and the remainder of buffer
+            let end_pos = self.buf_pos + self.buffer[self.buf_pos..self.buffer.len()]
                 .iter()
                 //.take_while( |n| **n >= b'0' && **n <= b'9')
                 .take_while( |n| is_digit(**n))
                 .count();
+
+
             // let mut n = 0usize;
             // for c in &self.buffer[self.buf_pos..self.buf_cap] {
             //     if *c <  b'0' || *c > b'9'{
@@ -384,14 +400,14 @@ impl <R: Read> JsonParser<R> {
             // }
             // let end_pos = self.buf_pos + n;
 
-            unsafe {
-                self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
-            }
+            // unsafe {
+            //     self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
+            // }
 
             self.buf_pos = end_pos;
                 
             // TODO: check boundary here?
-            if self.buf_pos < self.buf_cap {
+            if self.buf_pos < self.buffer.len() {
                 return Ok(true);
             }
 
@@ -466,7 +482,7 @@ impl <R: Read> JsonParser<R> {
 
         loop {
 
-            if self.buf_pos < self.buf_cap && self.buf_pos < self.buffer.len() {
+            if self.buf_pos < self.buffer.len() {
                 
                 let mut c = self.buffer[self.buf_pos];
                 self.buf_pos += 1;
@@ -631,7 +647,7 @@ impl <R: Read> JsonParser<R> {
         self.skip_whitespace() ?;
 
         // bit hacky .. check for EOF
-        if self.buf_cap == 0 {
+        if self.buffer.is_empty() {
             return match self.stack.is_empty() {
                 true => Ok(None),
                 false => Err(ParseErr::DidNotMatch),
@@ -654,9 +670,9 @@ impl <R: Read> JsonParser<R> {
 
         let mut s = String::with_capacity(50);
 
-        while self.buf_cap > 0 {
+        while !self.buffer.is_empty() {
 
-            for c in &self.buffer[self.buf_pos..self.buf_cap] {
+            for c in &self.buffer[self.buf_pos..self.buffer.len()] {
                 if *c >= b'0' && *c <= b'9' {
                     result +=1;
                     s.push(*c as char);
