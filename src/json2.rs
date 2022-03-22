@@ -54,7 +54,6 @@ const fn is_digit(c: u8) -> bool {
 }
 
 
-
 /// Checks a sequence of bytes match - useful for constants
 macro_rules! byte_seq {
     // first arg is parser/rewinder, then the args
@@ -423,6 +422,9 @@ impl <R: Read> JsonParser<R> {
     }
 
 
+    // TODO: .. "12323E+22" style numbers, positive and negative
+    // TODO: also check all number formats 
+    /// Matches a number in the JSON input
     fn match_number(&mut self) -> ParseResult<JsonEvent2> {
         
         // prob not necessary - we scan number only if matches
@@ -430,9 +432,9 @@ impl <R: Read> JsonParser<R> {
 
         // very first could be a minus!
         //if self.buf_pos < self.buffer.len() && self.buffer[self.buf_pos] == '-' as u8 {
-        self.string_buff.clear();
+        //self.string_buff.clear();
         if self.consume_if( U8_MINUS )? {
-            self.string_buff.push('-');
+            //self.string_buff.push('-');
         }
 
         // if no numbers, its a cockup
@@ -442,7 +444,7 @@ impl <R: Read> JsonParser<R> {
 
         //self.peeked.take(); // hack again
         if self.consume_if( U8_PERIOD )? {
-            self.string_buff.push('.');
+            //self.string_buff.push('.');
 
             if !self.match_digits_simd()? {
                 return Err(ParseErr::DidNotMatch);
@@ -450,20 +452,6 @@ impl <R: Read> JsonParser<R> {
         }
 
         Ok(JsonEvent2::Number(&self.string_buff))
-        // digits 
-
-        // . digit +
-
-        // digits  . digits
-
-        // E+digits or E-digits
-
-        // 'e' sign digits
-        // 'E' sign digits
-
-
-        // digits or a decimal -- here we need optional pattern
-        // e.g. [\-]+ [0-9]* (\. [0-9]*)+ (e|E) ... etc
 
     }
 
@@ -475,56 +463,81 @@ impl <R: Read> JsonParser<R> {
 
         // TODO: try and get directly into our required byte slice
         //let mut s = String::new();
-        self.string_buff.clear();
-        let mut escaped = false;
+        // self.string_buff.clear();
 
-        loop {
+        // put this locally to attempt to localise the var .. put in register?
+        let mut pos = self.buf_pos;
+        
+        loop { // end of string 
+            loop { // to refill buffer
+                // find the next non-text char .. 
 
-            if self.buf_pos < self.buffer.len() {
-                
-                let mut c = self.buffer[self.buf_pos];
-                self.buf_pos += 1;
+                // we'll try unrolling here in blocks of 4
+                if pos + 3 < self.buffer.len() && !self.buffer.is_empty() {
+                    
+                    let c0 = self.buffer[self.buf_pos];
+                    let c1 = self.buffer[self.buf_pos+1];
+                    let c2 = self.buffer[self.buf_pos+2];
+                    let c3 = self.buffer[self.buf_pos+3];
 
-                if c == U8_ESCAPE {
-                    escaped = true;
-                    continue;
-                } 
-
-                // not if in "escape mode"                
-                if c == '\n' as u8 || c == '\r' as u8 {
-                    return Err(ParseErr::BadData(String::from("\r or \n not allowed in string")));
-                }
-
-                // asssume input is valid utf8, so its just a char
-                if c > 127 { 
-                    continue;
-                }
-
-                if escaped {
-                    // Doesn't deal with hex \u00ff77
-                    escaped = false;
-                    if c == '\"' as u8 {
-                        // do nothing - just a quote
-                    } else if c == 'r' as u8 {
-                        c = '\r' as u8;
+                    if CHAR_FLAGS[c0 as usize] & 1 == 1 {
+                        // don not add
+                        break;
                     }
-                    // TODO : \n and \u812376 \nd \t
-                    // need to escape it
-                } else if c == U8_QUOTE {
-                    // end of string !
-                    // TODO: zero-copy of string please!
-                    // let the_str = self.string_buff.as_str();
-                    return Ok(());
-                } 
+                    if CHAR_FLAGS[c1 as usize] & 1 == 1 {
+                        pos += 1;
+                        break;
+                    }
+                    if CHAR_FLAGS[c2 as usize] & 1 == 1 {
+                        pos += 2;
+                        break;
+                    }
+                    if CHAR_FLAGS[c3 as usize] & 1 == 1 {
+                        pos += 3;
+                        break;
+                    }
+                    pos += 4;
+                } else {
+                    // we need to slow check
+                    let mut found = false;
+                    pos += self.buffer[pos..self.buffer.len()].iter()
+                        .take_while( |x| {
+                            if CHAR_FLAGS[**x as usize] & 1 == 1 { 
+                                found = true;
+                                false
+                            } else {
+                                true
+                            }
+                        }).count();
 
-                // TODO: try not to cast to char?
-                // just append to result
-                //self.string_buff.push( c as char);
+                    if found { 
+                        break
+                    };
 
-            }  else {
-                self.replace_buffer() ?;
+                }
+
+                // if we haven't broke out .. continue
+                self.buf_pos = pos;
+                self.ensure_buffer() ?;
+                pos = self.buf_pos;
             }
+
+            // Well always have a char here
+
+            // now actuall check the last char
+            if self.buffer[pos] == b'\\' {
+                // escape - just ignore next char for now, need to re-loop
+                // to collect rest of the String
+                pos += 1;
+            } else if self.buffer[pos] == b'"' { 
+                // break out of outer loop after passed the quote
+                pos +=1;
+                break;
+            }
+
         }
+        self.buf_pos = pos;
+        Ok(())
     }
 
     pub fn match_keyword(&mut self, b: u8) -> ParseResult<JsonEvent2> {
@@ -834,3 +847,4 @@ mod tests {
 
 
 }
+
