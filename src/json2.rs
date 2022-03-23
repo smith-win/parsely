@@ -53,6 +53,10 @@ const fn is_digit(c: u8) -> bool {
     CHAR_FLAGS[c as usize] & FLAG_DIGIT == FLAG_DIGIT
 }
 
+const fn is_not_text(c: u8) -> bool {
+    CHAR_FLAGS[c as usize] == FLAG_NOT_TEXT
+}
+
 
 /// Checks a sequence of bytes match - useful for constants
 macro_rules! byte_seq {
@@ -182,7 +186,7 @@ impl <R: Read> JsonParser<R> {
     pub fn new(r: R) -> JsonParser<R> {
         JsonParser {
             read: r,
-            buffer : Vec::with_capacity(8 * 1024),
+            buffer : Vec::with_capacity(32 * 1024),
             buf_pos: 0,
             string_buff : String::with_capacity(300), // guess at effective initial size
             stack: Vec::with_capacity(10), // 10 deep reasonable default
@@ -336,8 +340,6 @@ impl <R: Read> JsonParser<R> {
 
                 // this compare and branch is quite slow
                 if x != 16 {
-                    // not all digits, we can break
-                    //num_digits += x;
                     end = true;
                     break;
                 } 
@@ -376,13 +378,12 @@ impl <R: Read> JsonParser<R> {
         
         while !self.buffer.is_empty() {
 
-            let mut inc = 0;
             while self.buf_pos < self.buffer.len() - 3 {
-
-                if !is_digit(self.buffer[self.buf_pos]) { return Ok(true)}
-                if !is_digit(self.buffer[self.buf_pos+1]) { self.buf_pos += 1; return Ok(true);}
-                if !is_digit(self.buffer[self.buf_pos+2]) { self.buf_pos += 2; return Ok(true);}
-                if !is_digit(self.buffer[self.buf_pos+3]) { self.buf_pos += 3; return Ok(true);}
+                let s = &self.buffer[self.buf_pos..self.buf_pos+4];
+                if !is_digit(s[0]) { return Ok(true)}
+                if !is_digit(s[1]) { self.buf_pos += 1; return Ok(true);}
+                if !is_digit(s[2]) { self.buf_pos += 2; return Ok(true);}
+                if !is_digit(s[3]) { self.buf_pos += 3; return Ok(true);}
 
                 self.buf_pos += 4;
             }
@@ -473,12 +474,14 @@ impl <R: Read> JsonParser<R> {
                 // find the next non-text char .. 
 
                 // we'll try unrolling here in blocks of 4
-                if pos + 3 < self.buffer.len() && !self.buffer.is_empty() {
+                if pos + 7 < self.buffer.len() /*&& !self.buffer.is_empty() */{
                     
-                    let c0 = self.buffer[self.buf_pos];
-                    let c1 = self.buffer[self.buf_pos+1];
-                    let c2 = self.buffer[self.buf_pos+2];
-                    let c3 = self.buffer[self.buf_pos+3];
+                    let mut slice = &self.buffer[pos..pos+4];
+
+                    let mut c0 = slice[0];
+                    let mut c1 = slice[1];
+                    let mut c2 = slice[2];
+                    let mut c3 = slice[3];
 
                     if CHAR_FLAGS[c0 as usize] & 1 == 1 {
                         // don not add
@@ -496,7 +499,31 @@ impl <R: Read> JsonParser<R> {
                         pos += 3;
                         break;
                     }
-                    pos += 4;
+
+                    slice = &self.buffer[pos+4..pos+8];
+                    c0 = slice[0];
+                    c1 = slice[1];
+                    c2 = slice[2];
+                    c3 = slice[3];
+
+                    if CHAR_FLAGS[c0 as usize] & 1 == 1 {
+                        pos += 4;
+                        break ;
+                    }
+                    if CHAR_FLAGS[c1 as usize] & 1 == 1 {
+                        pos += 5;
+                        break;
+                    }
+                    if CHAR_FLAGS[c2 as usize] & 1 == 1 {
+                        pos += 6;
+                        break;
+                    }
+                    if CHAR_FLAGS[c3 as usize] & 1 == 1 {
+                        pos += 7;
+                        break;
+                    }
+
+                    pos += 8;
                 } else {
                     // we need to slow check
                     let mut found = false;
