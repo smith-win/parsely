@@ -17,15 +17,18 @@ const U8_PERIOD:u8 = '.' as u8;
 // Character flags
 // we have 8 to choose from
 //  - non-plain text chars like " and \ when looking at strings
-// const FLAG_WS:u8 = 4;
+const FLAG_WS:u8 = 4;
 const FLAG_DIGIT:u8 = 2;
 const FLAG_NOT_TEXT:u8 = 1;
 const CHAR_FLAGS : [u8; 256] = {
     let mut x = [0u8; 256];
 
     // Whitespace chars
-    // x[10] = FLAG_WS;
-    // x[13] = FLAG_WS;
+    x[8] = FLAG_WS;
+    x[9] = FLAG_WS;
+    x[10] = FLAG_WS;
+    x[13] = FLAG_WS;
+    x[32] = FLAG_WS;
 
 
     // Digits
@@ -47,14 +50,22 @@ const CHAR_FLAGS : [u8; 256] = {
     x
 };
 
+/// Is the item a digit
 #[inline]
-// Is the item a digit
 const fn is_digit(c: u8) -> bool {
     CHAR_FLAGS[c as usize] & FLAG_DIGIT == FLAG_DIGIT
 }
 
+/// Is the item whitespace
+#[inline]
+const fn is_whitespace(c: u8) -> bool {
+    CHAR_FLAGS[c as usize] & FLAG_WS == FLAG_WS
+}
+
+#[inline]
 const fn is_not_text(c: u8) -> bool {
-    CHAR_FLAGS[c as usize] == FLAG_NOT_TEXT
+    CHAR_FLAGS[c as usize] & FLAG_NOT_TEXT == FLAG_NOT_TEXT
+    // c == b'"' || c == b'\\'
 }
 
 
@@ -247,10 +258,9 @@ impl <R: Read> JsonParser<R> {
         loop {
 
             if self.buf_pos < self.buffer.len() {
-                // let x = self.buffer[self.buf_pos] ;
-                let x = * unsafe{self.buffer.get_unchecked(self.buf_pos) };
-
-                if x == 32 || x==9 || x == 8 || x == 10 || x == 13 {
+                let x = self.buffer[self.buf_pos] ;
+                //if x == 32 || x==9 || x == 8 || x == 10 || x == 13 {
+                if is_whitespace(x) {
                     self.buf_pos += 1 ;
                 } else {
                     return Ok(());
@@ -483,19 +493,19 @@ impl <R: Read> JsonParser<R> {
                     let mut c2 = slice[2];
                     let mut c3 = slice[3];
 
-                    if CHAR_FLAGS[c0 as usize] & 1 == 1 {
+                    if is_not_text(c0) {
                         // don not add
                         break;
                     }
-                    if CHAR_FLAGS[c1 as usize] & 1 == 1 {
+                    if is_not_text(c1) {
                         pos += 1;
                         break;
                     }
-                    if CHAR_FLAGS[c2 as usize] & 1 == 1 {
+                    if is_not_text(c2) {
                         pos += 2;
                         break;
                     }
-                    if CHAR_FLAGS[c3 as usize] & 1 == 1 {
+                    if is_not_text(c3) {
                         pos += 3;
                         break;
                     }
@@ -506,19 +516,19 @@ impl <R: Read> JsonParser<R> {
                     c2 = slice[2];
                     c3 = slice[3];
 
-                    if CHAR_FLAGS[c0 as usize] & 1 == 1 {
+                    if is_not_text(c0) {
                         pos += 4;
                         break ;
                     }
-                    if CHAR_FLAGS[c1 as usize] & 1 == 1 {
+                    if is_not_text(c1) {
                         pos += 5;
                         break;
                     }
-                    if CHAR_FLAGS[c2 as usize] & 1 == 1 {
+                    if is_not_text(c2) {
                         pos += 6;
                         break;
                     }
-                    if CHAR_FLAGS[c3 as usize] & 1 == 1 {
+                    if is_not_text(c3) {
                         pos += 7;
                         break;
                     }
