@@ -201,7 +201,14 @@ non-SIMD, codegen-units=1 ... 340 MB/s
 
 sudo sh -c 'echo 0 >/proc/sys/kernel/perf_event_paranoid'
 
+--> subslicing in unrolled loops -- e.g 
+    let s = &self.buffer[pos..pos+8];
+    then accessing s[0] s[1] rather then self.buffer[pos+1
 
+    --> quite an inprovement
+
+--> in "match value", we could consume the char (?) and then not additionally 
+    have to do it in number/string etc
 
 
 

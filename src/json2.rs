@@ -488,10 +488,10 @@ impl <R: Read> JsonParser<R> {
                     
                     let mut slice = &self.buffer[pos..pos+4];
 
-                    let mut c0 = slice[0];
-                    let mut c1 = slice[1];
-                    let mut c2 = slice[2];
-                    let mut c3 = slice[3];
+                    let c0 = slice[0];
+                    let c1 = slice[1];
+                    let c2 = slice[2];
+                    let c3 = slice[3];
 
                     if is_not_text(c0) {
                         // don not add
@@ -511,10 +511,10 @@ impl <R: Read> JsonParser<R> {
                     }
 
                     slice = &self.buffer[pos+4..pos+8];
-                    c0 = slice[0];
-                    c1 = slice[1];
-                    c2 = slice[2];
-                    c3 = slice[3];
+                    let c0 = slice[0];
+                    let c1 = slice[1];
+                    let c2 = slice[2];
+                    let c3 = slice[3];
 
                     if is_not_text(c0) {
                         pos += 4;
