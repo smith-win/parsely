@@ -6,6 +6,8 @@ edition = "2018"
 
 [profile.release]
 debug = true
+codegen-units = 1
+lto = "thin"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
