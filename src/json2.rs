@@ -296,7 +296,8 @@ impl <R: Read> JsonParser<R> {
     /// see can see the effect of SIMD vs non-SiMD in the result
     fn count_digits_slow(arr: &[u8]) -> ParseResult<usize> {
         Ok(arr.iter()
-            .take_while( |n| **n >= b'0' && **n <= b'9')
+            // .take_while( |n| **n >= b'0' && **n <= b'9')
+            .take_while( |n| is_digit(**n))
             .count()
         )
     }
@@ -483,15 +484,19 @@ impl <R: Read> JsonParser<R> {
             loop { // to refill buffer
                 // find the next non-text char .. 
 
-                // we'll try unrolling here in blocks of 4
+                // loop unrolling here
                 if pos + 7 < self.buffer.len() /*&& !self.buffer.is_empty() */{
                     
-                    let mut slice = &self.buffer[pos..pos+4];
+                    let slice = &self.buffer[pos..pos+8];
 
                     let c0 = slice[0];
                     let c1 = slice[1];
                     let c2 = slice[2];
                     let c3 = slice[3];
+                    let c4 = slice[4];
+                    let c5 = slice[5];
+                    let c6 = slice[6];
+                    let c7 = slice[7];
 
                     if is_not_text(c0) {
                         // don not add
@@ -509,36 +514,32 @@ impl <R: Read> JsonParser<R> {
                         pos += 3;
                         break;
                     }
-
-                    slice = &self.buffer[pos+4..pos+8];
-                    let c0 = slice[0];
-                    let c1 = slice[1];
-                    let c2 = slice[2];
-                    let c3 = slice[3];
-
-                    if is_not_text(c0) {
+                    if is_not_text(c4) {
                         pos += 4;
-                        break ;
+                        break;
                     }
-                    if is_not_text(c1) {
+                    if is_not_text(c5) {
                         pos += 5;
                         break;
                     }
-                    if is_not_text(c2) {
+                    if is_not_text(c6) {
                         pos += 6;
                         break;
                     }
-                    if is_not_text(c3) {
+                    if is_not_text(c7) {
                         pos += 7;
                         break;
                     }
 
                     pos += 8;
+                    
                 } else {
                     // we need to slow check
                     let mut found = false;
                     pos += self.buffer[pos..self.buffer.len()].iter()
                         .take_while( |x| {
+                            // found = is_not_text(**x);
+                            // !found
                             if CHAR_FLAGS[**x as usize] & 1 == 1 { 
                                 found = true;
                                 false
@@ -828,59 +829,16 @@ mod tests {
     }
 
 
-    /// Create a byemask from a char
-     fn byte_mask_128(b: u8) -> u128 {
-        let mut x = 0u128;
-        for _i in 0..16 {
-            x += b as u128;
-            x <<= 8;
-        }
-        x
-    }
+    // /// Create a byemask from a char
+    //  fn byte_mask_128(b: u8) -> u128 {
+    //     let mut x = 0u128;
+    //     for _i in 0..16 {
+    //         x += b as u128;
+    //         x <<= 8;
+    //     }
+    //     x
+    // }
 
-
-    /// Find the first quote in a String
-    fn find_quote(s: &str) -> u32 {
-        // we can assume its UTF-8 ?
-        let b = s.as_bytes();
-
-        let quote = '\"' as u8;
-        let chk = &[quote; 16];
-        println!("{:?}", chk);
-        println!("{:?}", b);
-        println!("Mask {:#130b}", byte_mask_128(quote));
-        let res = &mut[0u8; 16];
-        
-        let mut count = 0;
-        let iter = b.chunks_exact(16);
-        for bytes in iter {
-            
-            for n in 0..16 {
-                // println!("<< {}  {}  {} >>", bytes[n], chk[n], bytes[n] | chk[n]);
-                res[n] = bytes[n] & chk[n] ;
-            }
-
-            let x = u128::from_be_bytes(*res) & byte_mask_128(quote) ;
-
-            println!("{} {} {:#130b}", count, x, x);
-            println!("{:?}", res);
-
-            if x != 0 {
-                return count + x.leading_zeros() as u32;
-            }
-            count += 16;
-
-        }
-
-        // worry about remainder later
-        b.len() as u32
-    }
-
-
-    #[test]
-    pub fn check_find_quote() {
-        assert_eq!(7, find_quote(r##"0123456701234567012345670123456701234567"##));
-    } 
 
 
 }

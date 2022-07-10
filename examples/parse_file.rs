@@ -11,7 +11,7 @@ fn main() -> ParseResult<()> {
 
     let filename =  args.get(1).unwrap();
     
-    for i in 0..20 {
+    for _i in 0..20 {
         let f = std::fs::File::open( filename ).unwrap();
         let buf = BufReader::with_capacity(1024 * 128, f);
 
