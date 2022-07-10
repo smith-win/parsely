@@ -182,3 +182,35 @@ These are the events we make
 31Mar2021
 First iterative version working in rough, with basic errors when reach EOF, or invalid data (e..g  array not closed etc)
 
+
+Playing with compile options
+RUSTFLAGS="-Ctarget-cpu=native -Copt-level=2 -Ccodegen-units=1" cargo run --release --example parse_file  [datafile]
+
+non-SIMD, codegen-units=default ... 257 MB/s
+non-SIMD, codegen-units=1 ... 298 MB/s
+
+non-SIMD, codegen-units=default ... 277 MB/s
+non-SIMD, codegen-units=1 ... 340 MB/s
+
+
+--> I was always building strings, I no longer do. ==> improved to 400 MB/s
+    --> Need to store start/length of values should called wish to get them
+    --> If buffer overrun, or needs un-escaping .. need to store that fact
+
+--> Removed duplicative "skip whitespace" calls, improved to 430 MB/s
+
+sudo sh -c 'echo 0 >/proc/sys/kernel/perf_event_paranoid'
+
+--> subslicing in unrolled loops -- e.g 
+    let s = &self.buffer[pos..pos+8];
+    then accessing s[0] s[1] rather then self.buffer[pos+1
+
+    --> quite an inprovement
+
+--> in "match value", we could consume the char (?) and then not additionally 
+    have to do it in number/string etc
+
+
+
+
+

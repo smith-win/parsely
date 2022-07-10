@@ -3,7 +3,7 @@ extern crate parsely;
 
 use parsely::{internals::ParseResult, json2::JsonParser};
 use std::io::BufReader;
-
+use std::time::Instant;
 
 fn main() -> ParseResult<()> {
 
@@ -11,12 +11,18 @@ fn main() -> ParseResult<()> {
 
     let filename =  args.get(1).unwrap();
     
-    for i in 0..10 {
-        println!("Parsing #{}", i);
+    for _i in 0..20 {
         let f = std::fs::File::open( filename ).unwrap();
-        let buf = BufReader::new(f);
+        let buf = BufReader::with_capacity(1024 * 128, f);
+
         let json = JsonParser::new(buf);
+        let start_time = Instant::now();
         do_parse(json) ?;
+        let time_ms = Instant::now().duration_since(start_time).as_millis();
+        let bytes = std::fs::metadata(filename).unwrap().len();
+        let time_s =  time_ms as f32 / 1000.0;
+        // let mut json = JsonParser::new(buf);
+        println!("\tTime {} s, {} MB/sec", time_s, bytes as f32 / (1024.0 * 1024.0 * time_s));
     }
 
     Ok(())
