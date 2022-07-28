@@ -2,12 +2,12 @@
 
 use std::{io::Read};
 use std::vec::Vec;
-use crate::internals::{ParseResult, ParseErr};
+use crate::internals::{ParseResult,ParseErr};
 
 const U8_START_OBJ:u8 = '{' as u8;
 const U8_START_ARR:u8 = '[' as u8;
 const U8_QUOTE:u8 = '\"' as u8;
-const U8_ESCAPE:u8 = '\\' as u8;
+// const U8_ESCAPE:u8 = '\\' as u8;
 const U8_MINUS:u8 = '-' as u8;
 const U8_0:u8 = '0' as u8;
 const U8_9:u8 = '9' as u8;
@@ -59,12 +59,14 @@ const fn is_digit(c: u8) -> bool {
 /// Is the item whitespace
 #[inline]
 const fn is_whitespace(c: u8) -> bool {
-    CHAR_FLAGS[c as usize] & FLAG_WS == FLAG_WS
+    // CHAR_FLAGS[c as usize] & FLAG_WS == FLAG_WS
+    CHAR_FLAGS[c as usize] & FLAG_WS != 0
 }
 
 #[inline]
 const fn is_not_text(c: u8) -> bool {
-    CHAR_FLAGS[c as usize] & FLAG_NOT_TEXT == FLAG_NOT_TEXT
+    //CHAR_FLAGS[c as usize] & FLAG_NOT_TEXT == FLAG_NOT_TEXT
+    CHAR_FLAGS[c as usize] & FLAG_NOT_TEXT != 0
     // c == b'"' || c == b'\\'
 }
 
@@ -250,10 +252,29 @@ impl <R: Read> JsonParser<R> {
         }
     }
 
-
     /// Moves on until next char is whitespace
     #[inline]
     fn skip_whitespace(&mut self) ->ParseResult<()> {
+
+        // Iter seems slower than below
+        // loop {
+        //     let x = self.buffer[self.buf_pos..self.buffer.len()].iter()
+        //         .take_while( |x| is_whitespace(**x))
+        //         .count();
+
+        //     self.buf_pos += x;
+
+        //     if self.buf_pos < self.buffer.len() {
+        //         return Ok(())
+        //     } else {
+        //         self.ensure_buffer()?;
+        //         if self.buffer.len() == 0 {
+        //             return Ok(());
+        //         }
+        //     }
+
+        // }
+        
 
         loop {
 
@@ -280,8 +301,6 @@ impl <R: Read> JsonParser<R> {
     #[inline]
     fn match_char(&mut self, c: u8) -> ParseResult<()> {
 
-        // No, what if we need to get the next char?
-        //self.buf_pos += 1;
         self.ensure_buffer()?;
         if self.buf_pos < self.buffer.len() {
             if self.buffer[self.buf_pos]  == c {
@@ -291,6 +310,21 @@ impl <R: Read> JsonParser<R> {
         }
         Err(ParseErr::DidNotMatch)
     }
+
+
+    /// Returns the next char, only checking that a char is available
+    fn next_char(&mut self) -> ParseResult<u8> {
+
+        self.ensure_buffer()?;
+        if self.buf_pos < self.buffer.len() {
+            let c = self.buffer[self.buf_pos];
+            self.buf_pos += 1;
+            return Ok(c);
+        }
+        Err(ParseErr::DidNotMatch)
+    }
+
+
 
     /// Used on the remainder of the SIMD func, we put here
     /// see can see the effect of SIMD vs non-SiMD in the result
@@ -382,6 +416,77 @@ impl <R: Read> JsonParser<R> {
 
    }
     
+
+   /// Similar to the unrolled text version
+   fn match_digits_unrolled(&mut self) -> ParseResult<bool> {
+        // put this locally to attempt to localise the var .. put in register?
+        let mut pos = self.buf_pos;
+        
+        loop { // to refill buffer
+
+            // loop unrolling here
+            if pos + 3 < self.buffer.len() /*&& !self.buffer.is_empty() */{
+                
+                let slice = &self.buffer[pos..pos+4];
+                //println!("DEBUG! pos {}, len()={}, slice: {:?}", pos, self.buffer.len(), slice);
+
+                let c0 = slice[0];
+                let c1 = slice[1];
+                let c2 = slice[2];
+                let c3 = slice[3];
+
+                if !is_digit(c0) {
+                    // don not add
+                    break;
+                }
+                if !is_digit(c1) {
+                    pos += 1;
+                    break;
+                }
+                if !is_digit(c2) {
+                    pos += 2;
+                    break;
+                }
+                if !is_digit(c3) {
+                    pos += 3;
+                    break;
+                }
+                pos += 4;
+                
+            } else {
+                // we need to slow check
+                let mut found = false;
+                pos += self.buffer[pos..self.buffer.len()].iter()
+                    .take_while( |n| {
+                        if !is_digit(**n) { 
+                            found = true;
+                            false
+                        } else {
+                            true
+                        }
+                    }).count();
+
+                if found { 
+                    break
+                };
+
+            }
+
+            // if we haven't broke out .. continue
+            self.buf_pos = pos;
+            self.ensure_buffer() ?;
+            pos = self.buf_pos;
+        }
+        // println!("DEBUG! pos {}, len()={}", pos, self.buffer.len());
+        self.buf_pos = pos;
+        if pos < self.buffer.len() {
+            Ok(true)
+        } else {
+            Ok(false)    
+        }
+   }
+
+
     /// Called only from match number, returns true if any digits matched
     /// // we'll try inlining, because only used in number check
     #[inline]
@@ -405,17 +510,6 @@ impl <R: Read> JsonParser<R> {
                 //.take_while( |n| **n >= b'0' && **n <= b'9')
                 .take_while( |n| is_digit(**n))
                 .count();
-
-
-            // let mut n = 0usize;
-            // for c in &self.buffer[self.buf_pos..self.buf_cap] {
-            //     if *c <  b'0' || *c > b'9'{
-            //     // if !is_digit(*c) {
-            //         break;
-            //     }
-            //     n += 1;
-            // }
-            // let end_pos = self.buf_pos + n;
 
             // unsafe {
             //     self.string_buff.as_mut_vec().extend_from_slice( &self.buffer[self.buf_pos..end_pos]);
@@ -471,7 +565,7 @@ impl <R: Read> JsonParser<R> {
     /// Matches a quoted string
     fn match_string(&mut self) -> ParseResult<()> {
 
-        self.match_char( U8_QUOTE ) ?;
+        //self.match_char( U8_QUOTE ) ?;
 
         // TODO: try and get directly into our required byte slice
         //let mut s = String::new();
@@ -590,15 +684,15 @@ impl <R: Read> JsonParser<R> {
 
         if b == 't' as u8 { 
             //true
-            byte_seq!(self, 't', 'r', 'u', 'e');
+            byte_seq!(self, 'r', 'u', 'e');
             return Ok(JsonEvent2::Boolean(true));
         } else if b == 'f' as u8 { 
             //false
-            byte_seq!(self, 'f', 'a', 'l', 's', 'e');
+            byte_seq!(self, 'a', 'l', 's', 'e');
             return Ok(JsonEvent2::Boolean(false));
         } else if b == 'n' as u8 { 
             //null
-            byte_seq!(self, 'n', 'u', 'l', 'l');
+            byte_seq!(self, 'u', 'l', 'l');
             return Ok(JsonEvent2::Null);
         } 
 
@@ -609,17 +703,19 @@ impl <R: Read> JsonParser<R> {
     fn it_match_value(&mut self) -> ParseResult<JsonEvent2> {
         self.skip_whitespace() ?;
         // Peek the char
-        match self.peek()? {
-            Some( U8_QUOTE ) => { self.match_string()?; 
+        let c = self.next_char()?;
+
+        match c {
+            U8_QUOTE  => { self.match_string()?; 
                 Ok(JsonEvent2::String(&self.string_buff)) }
-            Some( U8_START_ARR ) => {self.stack.push(JsonStackItem::Array(0)); 
-                self.buf_pos += 1; Ok(JsonEvent2::ArrayStart)}
-            Some( U8_START_OBJ ) => {self.stack.push(JsonStackItem::Object(0)); 
-                self.buf_pos += 1; Ok(JsonEvent2::ObjectStart)}
-            Some ( n ) if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => 
+            U8_START_ARR  => {self.stack.push(JsonStackItem::Array(0)); 
+                Ok(JsonEvent2::ArrayStart)}
+            U8_START_OBJ  => {self.stack.push(JsonStackItem::Object(0)); 
+                Ok(JsonEvent2::ObjectStart)}
+             n  if (n >= U8_0 && n <= U8_9) || n == U8_MINUS => 
                 self.match_number(),
-            Some( b ) => self.match_keyword( b ) ,
-            _ => Err(ParseErr::DidNotMatch),
+            b  => self.match_keyword( b ) ,
+            
         }        
     }
 
@@ -640,9 +736,10 @@ impl <R: Read> JsonParser<R> {
             self.match_char(b',')?;
             self.skip_whitespace()?;
         }
-        // TODO: increment the object member counter!!
+
+        // increment the object member counter!!
         if let Some(JsonStackItem::Array(n)) = self.stack.last_mut() {
-            *n += 1
+            *n += 1;
         }
 
         // value name
@@ -670,6 +767,7 @@ impl <R: Read> JsonParser<R> {
         }
 
         // value name
+        self.match_char(U8_QUOTE) ?;
         self.match_string() ? ;  
         self.skip_whitespace() ? ;
         self.match_char(':' as u8) ?;
@@ -724,7 +822,7 @@ impl <R: Read> JsonParser<R> {
             self.replace_buffer()?;
         }
 
-        println!("{}", s);
+        //println!("{}", s);
 
         Ok(result)
 
